@@ -102,9 +102,7 @@ where
             "Store event message."
         );
 
-        let raw_keys = event.keys.clone();
-        let raw_values = event.values.clone();
-        let mut keys_and_unpacked = [raw_keys.clone(), raw_values.clone()].concat();
+        let mut keys_and_unpacked = [event.keys.as_slice(), event.values.as_slice()].concat();
 
         let mut entity = model.schema.clone();
         if let Err(e) = entity.deserialize(&mut keys_and_unpacked, model.use_legacy_store) {
@@ -116,8 +114,8 @@ where
                 model_contract_address = %format!("{:#x}", model.contract_address),
                 class_hash = %format!("{:#x}", model.class_hash),
                 use_legacy_store = model.use_legacy_store,
-                raw_keys = ?raw_keys,
-                raw_values = ?raw_values,
+                raw_keys = ?event.keys,
+                raw_values = ?event.values,
                 error = ?e,
                 "Failed to deserialize event message."
             );

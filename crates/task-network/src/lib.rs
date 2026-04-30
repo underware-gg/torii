@@ -4,10 +4,10 @@ pub use error::TaskNetworkError;
 
 pub type Result<T> = std::result::Result<T, TaskNetworkError>;
 
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::hash::Hash;
 use std::sync::Arc;
-use std::collections::{HashMap, HashSet};
 
 use futures_util::future::try_join_all;
 use tokio::sync::Semaphore;
