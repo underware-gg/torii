@@ -6,8 +6,7 @@ use dojo_world::contracts::abigen::world::Event as WorldEvent;
 use starknet::core::types::{Event, Felt};
 use starknet::providers::Provider;
 use starknet_crypto::poseidon_hash_many;
-use torii_cache::CacheError;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use crate::error::Error;
 use crate::task_manager::TaskId;
@@ -82,13 +81,13 @@ where
         };
 
         // silently ignore if the model is not found
-        let model = match ctx.cache.model(ctx.contract_address, event.selector).await {
+        let model = match ctx.storage.model(ctx.contract_address, event.selector).await {
             Ok(model) => model,
-            Err(CacheError::ModelNotFound(_)) if !ctx.config.namespaces.is_empty() => {
+            Err(_) if !ctx.config.namespaces.is_empty() => {
                 debug!(
                     target: LOG_TARGET,
                     selector = %event.selector,
-                    "Model not found in cache, skipping. This can happen if only specific namespaces are indexed."
+                    "Model not found in storage, skipping. This can happen if only specific namespaces are indexed."
                 );
                 return Ok(());
             }
@@ -103,10 +102,27 @@ where
             "Store event message."
         );
 
-        let mut keys_and_unpacked = [event.keys.clone(), event.values].concat();
+        let raw_keys = event.keys.clone();
+        let raw_values = event.values.clone();
+        let mut keys_and_unpacked = [raw_keys.clone(), raw_values.clone()].concat();
 
         let mut entity = model.schema.clone();
-        entity.deserialize(&mut keys_and_unpacked, model.use_legacy_store)?;
+        if let Err(e) = entity.deserialize(&mut keys_and_unpacked, model.use_legacy_store) {
+            error!(
+                target: LOG_TARGET,
+                namespace = %model.namespace,
+                name = %model.name,
+                selector = %format!("{:#x}", model.selector),
+                model_contract_address = %format!("{:#x}", model.contract_address),
+                class_hash = %format!("{:#x}", model.class_hash),
+                use_legacy_store = model.use_legacy_store,
+                raw_keys = ?raw_keys,
+                raw_values = ?raw_values,
+                error = ?e,
+                "Failed to deserialize event message."
+            );
+            return Err(e.into());
+        }
 
         ctx.storage
             .set_event_message(

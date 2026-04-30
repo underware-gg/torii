@@ -90,7 +90,24 @@ impl<P: Provider + Send + Sync + Clone + std::fmt::Debug + 'static> TaskManager<
         dependencies: Vec<TaskId>,
         parallelized_event: ParallelizedEvent,
     ) {
-        if let Some(task_data) = self.task_network.get_mut(&task_identifier) {
+        if self.task_network.contains_key(&task_identifier) {
+            if let Err(e) =
+                self.task_network.add_dependencies(task_identifier, dependencies.clone())
+            {
+                error!(
+                    target: LOG_TARGET,
+                    error = ?e,
+                    task_id = %task_identifier,
+                    dependencies = ?dependencies,
+                    parallelized_event = ?parallelized_event,
+                    "Failed to add dependencies to existing task."
+                );
+            }
+
+            let task_data = self
+                .task_network
+                .get_mut(&task_identifier)
+                .expect("Task should exist after contains_key check");
             match parallelized_event.indexing_mode {
                 IndexingMode::Latest(event_key) => {
                     task_data
