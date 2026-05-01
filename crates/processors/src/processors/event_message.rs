@@ -80,10 +80,15 @@ where
             }
         };
 
-        // silently ignore if the model is not found
-        let model = match ctx.storage.model(ctx.contract_address, event.selector).await {
-            Ok(model) => model,
-            Err(_) if !ctx.config.namespaces.is_empty() => {
+        // If the model does not exist, silently ignore it when namespace filtering is on.
+        // This can happen if only specific namespaces are indexed.
+        let model = match ctx
+            .storage
+            .model_optional(ctx.contract_address, event.selector)
+            .await?
+        {
+            Some(model) => model,
+            None if !ctx.config.namespaces.is_empty() => {
                 debug!(
                     target: LOG_TARGET,
                     selector = %event.selector,
@@ -91,7 +96,7 @@ where
                 );
                 return Ok(());
             }
-            Err(e) => return Err(e.into()),
+            None => return Err(Error::ModelNotFound(event.selector)),
         };
 
         info!(

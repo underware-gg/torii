@@ -102,8 +102,9 @@ impl<P: Provider + Send + Sync + Clone + std::fmt::Debug + 'static> TaskManager<
                 }
             }
 
-            if let Err(e) =
-                self.task_network.add_dependencies(task_identifier, dependencies.clone())
+            if let Err(e) = self
+                .task_network
+                .add_dependencies(task_identifier, dependencies.clone())
             {
                 error!(
                     target: LOG_TARGET,

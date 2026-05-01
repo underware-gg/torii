@@ -235,6 +235,7 @@ impl<P: Provider + Send + Sync + Clone + std::fmt::Debug + 'static> Engine<P> {
                                             self.storage.rollback().await?;
                                             self.cache.clear_balances_diff().await;
                                             self.cache.clear_models().await;
+                                            self.cache.reset_token_registry().await?;
                                             self.task_manager.clear_tasks();
                                             gauge!("torii_indexer_backoff_delay_seconds", "operation" => "process").set(processing_backoff_delay.as_secs_f64());
                                             sleep(processing_backoff_delay).await;

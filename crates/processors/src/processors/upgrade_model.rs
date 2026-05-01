@@ -11,6 +11,7 @@ use starknet::providers::{Provider, ProviderError};
 use torii_proto::Model;
 use tracing::{debug, info};
 
+use crate::error::Error;
 use crate::task_manager::TaskId;
 use crate::EventProcessor;
 use crate::{EventProcessorContext, Result};
@@ -57,11 +58,15 @@ where
             }
         };
 
-        // If the model does not exist, silently ignore it.
+        // If the model does not exist, silently ignore it when namespace filtering is on.
         // This can happen if only specific namespaces are indexed.
-        let model = match ctx.storage.model(ctx.contract_address, event.selector).await {
-            Ok(m) => m,
-            Err(_) if !ctx.config.namespaces.is_empty() => {
+        let model = match ctx
+            .storage
+            .model_optional(ctx.contract_address, event.selector)
+            .await?
+        {
+            Some(m) => m,
+            None if !ctx.config.namespaces.is_empty() => {
                 debug!(
                     target: LOG_TARGET,
                     selector = %event.selector,
@@ -69,7 +74,7 @@ where
                 );
                 return Ok(());
             }
-            Err(e) => return Err(e.into()),
+            None => return Err(Error::ModelNotFound(event.selector)),
         };
 
         let name = model.name;

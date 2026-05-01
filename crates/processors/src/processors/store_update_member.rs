@@ -84,9 +84,13 @@ where
 
         // If the model does not exist, silently ignore it.
         // This can happen if only specific namespaces are indexed.
-        let model = match ctx.storage.model(ctx.contract_address, model_selector).await {
-            Ok(m) => m,
-            Err(_) if !ctx.config.namespaces.is_empty() => {
+        let model = match ctx
+            .storage
+            .model_optional(ctx.contract_address, model_selector)
+            .await?
+        {
+            Some(m) => m,
+            None if !ctx.config.namespaces.is_empty() => {
                 debug!(
                     target: LOG_TARGET,
                     selector = %model_selector,
@@ -94,9 +98,7 @@ where
                 );
                 return Ok(());
             }
-            Err(e) => {
-                return Err(e.into());
-            }
+            None => return Err(Error::ModelNotFound(model_selector)),
         };
 
         let schema = model.schema;
