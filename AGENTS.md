@@ -44,6 +44,7 @@
 
 - **Source of truth:** `.agents/`.
 - **Symlinks:** `CLAUDE.md` is a symlink to this file (`AGENTS.md`). Editor/agent configs should symlink skills from `.agents/skills`.
+- **Local overrides:** read `AGENTS.local.md`, if present.
 - **Skills install/update:**
 
 ```bash
