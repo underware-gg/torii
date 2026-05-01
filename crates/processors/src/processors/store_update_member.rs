@@ -6,7 +6,7 @@ use dojo_world::contracts::abigen::world::Event as WorldEvent;
 use starknet::core::types::Event;
 use starknet::core::utils::get_selector_from_name;
 use starknet::providers::Provider;
-use tracing::{debug, info};
+use tracing::info;
 
 use crate::error::Error;
 use crate::task_manager::TaskId;
@@ -82,23 +82,8 @@ where
         let entity_id = event.entity_id;
         let member_selector = event.member_selector;
 
-        // If the model does not exist, silently ignore it.
-        // This can happen if only specific namespaces are indexed.
-        let model = match ctx
-            .storage
-            .model_optional(ctx.contract_address, model_selector)
-            .await?
-        {
-            Some(m) => m,
-            None if !ctx.config.namespaces.is_empty() => {
-                debug!(
-                    target: LOG_TARGET,
-                    selector = %model_selector,
-                    "Model not found in storage, skipping. This can happen if only specific namespaces are indexed."
-                );
-                return Ok(());
-            }
-            None => return Err(Error::ModelNotFound(model_selector)),
+        let Some(model) = ctx.resolve_model_or_skip(model_selector).await? else {
+            return Ok(());
         };
 
         let schema = model.schema;

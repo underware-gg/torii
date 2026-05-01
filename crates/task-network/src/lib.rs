@@ -56,10 +56,7 @@ where
             .map_err(TaskNetworkError::GraphError)?;
 
         self.resolve_pending_dependents(&task_id)?;
-
-        for dep in dependencies {
-            self.add_dependency_or_defer(dep, task_id.clone())?;
-        }
+        self.add_dependencies(task_id, dependencies)?;
 
         Ok(())
     }
@@ -186,10 +183,6 @@ where
 
     pub fn len(&self) -> usize {
         self.tasks.len()
-    }
-
-    pub fn contains_key(&self, task_id: &K) -> bool {
-        self.tasks.contains_key(task_id)
     }
 
     pub fn get_mut(&mut self, task_id: &K) -> Option<&mut T> {

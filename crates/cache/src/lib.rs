@@ -291,11 +291,10 @@ impl ErcCache {
     }
 
     pub async fn reset_token_registry(&self) -> Result<(), Error> {
-        let token_ids: HashSet<TokenId> = self.storage.token_ids().await?;
+        let rebuilt = Self::load_token_registry(&*self.storage).await?;
         self.token_id_registry.clear();
-        for token_id in token_ids {
-            self.token_id_registry
-                .insert(token_id, TokenState::Registered);
+        for (token_id, state) in rebuilt {
+            self.token_id_registry.insert(token_id, state);
         }
         Ok(())
     }

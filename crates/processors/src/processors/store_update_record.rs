@@ -5,9 +5,8 @@ use dojo_types::schema::Ty;
 use dojo_world::contracts::abigen::world::Event as WorldEvent;
 use starknet::core::types::Event;
 use starknet::providers::Provider;
-use tracing::{debug, info};
+use tracing::info;
 
-use crate::error::Error;
 use crate::task_manager::TaskId;
 use crate::{EventProcessor, EventProcessorConfig, EventProcessorContext};
 use crate::{IndexingMode, Result};
@@ -78,23 +77,8 @@ where
         let model_selector = event.selector;
         let entity_id = event.entity_id;
 
-        // If the model does not exist, silently ignore it when namespace filtering is on.
-        // This can happen if only specific namespaces are indexed.
-        let model = match ctx
-            .storage
-            .model_optional(ctx.contract_address, event.selector)
-            .await?
-        {
-            Some(m) => m,
-            None if !ctx.config.namespaces.is_empty() => {
-                debug!(
-                    target: LOG_TARGET,
-                    selector = %event.selector,
-                    "Model not found in storage, skipping. This can happen if only specific namespaces are indexed."
-                );
-                return Ok(());
-            }
-            None => return Err(Error::ModelNotFound(event.selector)),
+        let Some(model) = ctx.resolve_model_or_skip(event.selector).await? else {
+            return Ok(());
         };
 
         info!(
