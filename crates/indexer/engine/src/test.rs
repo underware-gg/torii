@@ -7,7 +7,10 @@ use async_trait::async_trait;
 use cainome::cairo_serde::{ByteArray, CairoSerde, ContractAddress};
 use dojo_test_utils::migration::copy_spawn_and_move_db;
 use dojo_test_utils::setup::TestSetup;
+use dojo_types::primitive::Primitive;
+use dojo_types::schema::{Member, Struct, Ty};
 use dojo_utils::{TransactionExt, TransactionWaiter, TxnConfig};
+use dojo_world::contracts::abigen::model::Layout;
 use dojo_world::contracts::naming::{compute_bytearray_hash, compute_selector_from_names};
 use dojo_world::contracts::world::WorldContract;
 use katana_runner::RunnerCtx;
@@ -15,16 +18,17 @@ use num_traits::ToPrimitive;
 use scarb_interop::Profile;
 use scarb_metadata_ext::MetadataDojoExt;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::Row;
 use starknet::accounts::Account;
 use starknet::core::types::{BlockId, BlockTag, Call, Event, Felt, FunctionCall, U256};
 use starknet::core::utils::get_selector_from_name;
 use starknet::macros::selector;
 use starknet::providers::jsonrpc::HttpTransport;
-use starknet::providers::{JsonRpcClient, Provider};
+use starknet::providers::{JsonRpcClient, Provider, Url};
 use starknet_crypto::poseidon_hash_many;
 use tempfile::NamedTempFile;
 use tokio::sync::broadcast;
-use torii_cache::{Cache, InMemoryCache};
+use torii_cache::{Cache, InMemoryCache, ReadOnlyCache};
 use torii_sqlite::executor::Executor;
 use torii_sqlite::types::Token;
 use torii_sqlite::utils::{felt_and_u256_to_sql_string, felt_to_sql_string, u256_to_sql_string};
@@ -1403,6 +1407,131 @@ async fn count_table(table_name: &str, pool: &sqlx::Pool<sqlx::Sqlite>) -> i64 {
     count.0
 }
 
+fn hashed_task_identifier(from_address: Felt, discriminator: Felt) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    from_address.hash(&mut hasher);
+    discriminator.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn schema_has_member(schema: &Ty, member_name: &str) -> bool {
+    match schema {
+        Ty::Struct(struct_ty) => struct_ty
+            .children
+            .iter()
+            .any(|member| member.name == member_name),
+        _ => false,
+    }
+}
+
+async fn table_has_column(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    table_name: &str,
+    column_name: &str,
+) -> bool {
+    let query = format!("PRAGMA table_info([{table_name}])");
+    let rows = sqlx::query(&query).fetch_all(pool).await.unwrap();
+
+    rows.into_iter()
+        .any(|row| row.try_get::<String, _>("name").unwrap() == column_name)
+}
+
+#[derive(Debug)]
+struct SyntheticModelUpgradeProcessor {
+    selector: Felt,
+    added_member: &'static str,
+}
+
+#[async_trait]
+impl<P> EventProcessor<P> for SyntheticModelUpgradeProcessor
+where
+    P: Provider + Send + Sync + Clone + std::fmt::Debug + 'static,
+{
+    fn event_key(&self) -> String {
+        "SyntheticModelUpgrade".to_string()
+    }
+
+    fn validate(&self, event: &Event) -> bool {
+        event.keys.len() == 2 && event.keys[1] == self.selector
+    }
+
+    fn task_identifier(&self, event: &Event) -> u64 {
+        hashed_task_identifier(event.from_address, event.keys[1])
+    }
+
+    async fn process(&self, ctx: &EventProcessorContext<P>) -> ProcessorResult<()> {
+        let current = ctx
+            .storage
+            .model_optional(ctx.contract_address, self.selector)
+            .await?
+            .expect("seeded model must exist");
+
+        let mut upgraded_schema = current.schema.clone();
+        let struct_ty = match &mut upgraded_schema {
+            Ty::Struct(struct_ty) => struct_ty,
+            _ => panic!("synthetic test expects a struct model"),
+        };
+
+        if struct_ty
+            .children
+            .iter()
+            .all(|member| member.name != self.added_member)
+        {
+            struct_ty.children.push(Member {
+                name: self.added_member.to_string(),
+                ty: Ty::Primitive(Primitive::U32(None)),
+                key: false,
+            });
+        }
+
+        let Some(schema_diff) = upgraded_schema.diff(&current.schema) else {
+            return Ok(());
+        };
+        let upgrade_diff = current.schema.diff(&upgraded_schema);
+        let packed_size = current.packed_size.saturating_add(1);
+        let unpacked_size = current.unpacked_size.saturating_add(1);
+
+        ctx.storage
+            .register_model(
+                ctx.contract_address,
+                self.selector,
+                &upgraded_schema,
+                &current.layout,
+                current.class_hash,
+                current.contract_address,
+                packed_size,
+                unpacked_size,
+                ctx.block_timestamp,
+                Some(&schema_diff),
+                upgrade_diff.as_ref(),
+                current.use_legacy_store,
+            )
+            .await?;
+
+        ctx.cache
+            .register_model(
+                ctx.contract_address,
+                self.selector,
+                torii_storage::proto::Model {
+                    world_address: ctx.contract_address,
+                    namespace: current.namespace,
+                    name: current.name,
+                    selector: self.selector,
+                    class_hash: current.class_hash,
+                    contract_address: current.contract_address,
+                    packed_size,
+                    unpacked_size,
+                    layout: current.layout,
+                    schema: upgraded_schema,
+                    use_legacy_store: current.use_legacy_store,
+                },
+            )
+            .await;
+
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 struct OneShotFailProcessor {
     invocations: Arc<AtomicUsize>,
@@ -1437,6 +1566,242 @@ where
             Ok(())
         }
     }
+}
+
+#[derive(Debug)]
+struct OneShotModelFailProcessor {
+    invocations: Arc<AtomicUsize>,
+    selector: Felt,
+}
+
+#[async_trait]
+impl<P> EventProcessor<P> for OneShotModelFailProcessor
+where
+    P: Provider + Send + Sync + Clone + std::fmt::Debug + 'static,
+{
+    fn event_key(&self) -> String {
+        "SyntheticModelFail".to_string()
+    }
+
+    fn validate(&self, event: &Event) -> bool {
+        event.keys.len() == 2 && event.keys[1] == self.selector
+    }
+
+    fn task_identifier(&self, event: &Event) -> u64 {
+        hashed_task_identifier(event.from_address, event.keys[1])
+    }
+
+    async fn process(&self, _ctx: &EventProcessorContext<P>) -> ProcessorResult<()> {
+        let attempt = self.invocations.fetch_add(1, Ordering::SeqCst);
+        if attempt == 0 {
+            Err(ProcessorError::UriMalformed)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_rollback_replays_model_upgrade_after_cache_reset() {
+    let provider = Arc::new(JsonRpcClient::new(HttpTransport::new(
+        Url::parse("http://127.0.0.1:0").unwrap(),
+    )));
+
+    let tempfile = NamedTempFile::new().unwrap();
+    let path = tempfile.path().to_string_lossy();
+    let options = SqliteConnectOptions::from_str(&path)
+        .unwrap()
+        .create_if_missing(true);
+    let pool = SqlitePoolOptions::new()
+        .connect_with(options)
+        .await
+        .unwrap();
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+
+    let (shutdown_tx, _) = broadcast::channel(1);
+    let (mut executor, sender) =
+        Executor::new(pool.clone(), shutdown_tx.clone(), Arc::clone(&provider))
+            .await
+            .unwrap();
+    tokio::spawn(async move {
+        executor.run().await.unwrap();
+    });
+
+    let world_address = Felt::from(0x111_u64);
+    let model_selector = Felt::from(0x222_u64);
+    let initial_schema = Ty::Struct(Struct {
+        name: "ns-RollbackProbe".to_string(),
+        children: vec![
+            Member {
+                name: "player".to_string(),
+                ty: Ty::Primitive(Primitive::ContractAddress(None)),
+                key: true,
+            },
+            Member {
+                name: "score".to_string(),
+                ty: Ty::Primitive(Primitive::U32(None)),
+                key: false,
+            },
+        ],
+    });
+    let layout = Layout::Fixed(vec![]);
+
+    let contracts = vec![ContractDefinition {
+        address: world_address,
+        r#type: ContractType::WORLD,
+        starting_block: None,
+    }];
+
+    let db = Sql::new(pool.clone(), sender, &contracts).await.unwrap();
+    let cache = Arc::new(InMemoryCache::new(Arc::new(db.clone())).await.unwrap());
+    let db = db.with_cache(cache.clone());
+
+    db.register_model(
+        world_address,
+        model_selector,
+        &initial_schema,
+        &layout,
+        Felt::from(0x333_u64),
+        Felt::from(0x444_u64),
+        1,
+        2,
+        1_715_000_000,
+        None,
+        None,
+        true,
+    )
+    .await
+    .unwrap();
+    db.execute().await.unwrap();
+
+    let table_name = initial_schema.name();
+    let added_member = "rollback_probe";
+    assert!(!table_has_column(&pool, &table_name, added_member).await);
+    assert!(matches!(
+        cache.model(world_address, model_selector).await,
+        Err(torii_cache::error::Error::ModelNotFound(selector)) if selector == model_selector
+    ));
+
+    let fail_invocations = Arc::new(AtomicUsize::new(0));
+    let mut processors = Processors::<Arc<JsonRpcClient<HttpTransport>>>::default();
+    processors
+        .event_processors
+        .get_mut(&ContractType::WORLD)
+        .unwrap()
+        .entry(selector!("SyntheticModelUpgrade"))
+        .or_default()
+        .push(Box::new(SyntheticModelUpgradeProcessor {
+            selector: model_selector,
+            added_member,
+        }));
+    processors
+        .event_processors
+        .get_mut(&ContractType::WORLD)
+        .unwrap()
+        .entry(selector!("SyntheticModelFail"))
+        .or_default()
+        .push(Box::new(OneShotModelFailProcessor {
+            invocations: fail_invocations.clone(),
+            selector: model_selector,
+        }));
+    let processors = Arc::new(processors);
+
+    let upgrade_event = Event {
+        from_address: world_address,
+        keys: vec![selector!("SyntheticModelUpgrade"), model_selector],
+        data: vec![],
+    };
+    let fail_event = Event {
+        from_address: world_address,
+        keys: vec![selector!("SyntheticModelFail"), model_selector],
+        data: vec![],
+    };
+
+    let tx_hash = Felt::from(0x999_u64);
+    let block_number = 1_u64;
+    let block_timestamp = 1_715_000_123_u64;
+    let fetch_result = FetchResult {
+        range: FetchRangeResult {
+            blocks: std::collections::BTreeMap::from([(
+                block_number,
+                FetchRangeBlock {
+                    block_hash: Some(Felt::from(0x1234_u64)),
+                    timestamp: block_timestamp,
+                    transactions: vec![(
+                        tx_hash,
+                        FetchTransaction {
+                            transaction: None,
+                            events: vec![upgrade_event.clone(), fail_event.clone()],
+                            receipt: None,
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                },
+            )]),
+        },
+        preconfirmed_block: None,
+        cursors: torii_indexer_fetcher::Cursors {
+            cursor_transactions: std::collections::HashMap::new(),
+            cursors: std::collections::HashMap::from([(
+                world_address,
+                torii_storage::proto::ContractCursor {
+                    contract_address: world_address,
+                    head: Some(0),
+                    last_block_timestamp: None,
+                    last_pending_block_tx: None,
+                },
+            )]),
+        },
+    };
+    let contract_types = std::collections::HashMap::from([(world_address, ContractType::WORLD)]);
+
+    let mut engine = Engine::new(
+        Arc::new(db.clone()),
+        cache.clone(),
+        provider.clone(),
+        processors.clone(),
+        EngineConfig::default(),
+        shutdown_tx.clone(),
+    );
+
+    assert!(engine
+        .process(&fetch_result, &contract_types)
+        .await
+        .is_err());
+
+    let poisoned_model = cache.model(world_address, model_selector).await.unwrap();
+    assert!(schema_has_member(&poisoned_model.schema, added_member));
+    assert!(!table_has_column(&pool, &table_name, added_member).await);
+
+    db.rollback().await.unwrap();
+    cache.clear_balances_diff().await;
+    cache.clear_models().await;
+    cache.reset_token_registry().await.unwrap();
+
+    assert!(matches!(
+        cache.model(world_address, model_selector).await,
+        Err(torii_cache::error::Error::ModelNotFound(selector)) if selector == model_selector
+    ));
+
+    let mut retry_engine = Engine::new(
+        Arc::new(db.clone()),
+        cache.clone(),
+        provider,
+        processors,
+        EngineConfig::default(),
+        shutdown_tx,
+    );
+    retry_engine
+        .process(&fetch_result, &contract_types)
+        .await
+        .unwrap();
+    db.execute().await.unwrap();
+
+    assert!(table_has_column(&pool, &table_name, added_member).await);
+    let upgraded_model = cache.model(world_address, model_selector).await.unwrap();
+    assert!(schema_has_member(&upgraded_model.schema, added_member));
+    assert_eq!(fail_invocations.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test(flavor = "multi_thread")]
