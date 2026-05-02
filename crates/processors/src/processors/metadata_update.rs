@@ -10,7 +10,7 @@ use dojo_world::contracts::abigen::world::Event as WorldEvent;
 use dojo_world::uri::Uri;
 use starknet::core::types::{Event, Felt};
 use starknet::providers::Provider;
-use torii_storage::Storage;
+use torii_storage::{utils::hex_felt, Storage};
 use tracing::{error, info};
 
 use crate::error::{Error, ParseError};
@@ -61,7 +61,7 @@ where
         let uri_str = event.uri.to_string().unwrap();
         info!(
             target: LOG_TARGET,
-            resource = %format!("{:#x}", event.resource),
+            resource = %hex_felt(&event.resource),
             uri = %uri_str,
             "Resource metadata set."
         );
@@ -90,14 +90,14 @@ async fn try_retrieve(storage: Arc<dyn Storage>, resource: Felt, uri_str: String
                 .unwrap();
             info!(
                 target: LOG_TARGET,
-                resource = %format!("{:#x}", resource),
+                resource = %hex_felt(&resource),
                 "Updated resource metadata from ipfs."
             );
         }
         Err(e) => {
             error!(
                 target: LOG_TARGET,
-                resource = %format!("{:#x}", resource),
+                resource = %hex_felt(&resource),
                 uri = %uri_str,
                 error = ?e,
                 "Retrieving resource uri."

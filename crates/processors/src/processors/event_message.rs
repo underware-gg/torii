@@ -6,6 +6,7 @@ use dojo_world::contracts::abigen::world::Event as WorldEvent;
 use starknet::core::types::{Event, Felt};
 use starknet::providers::Provider;
 use starknet_crypto::poseidon_hash_many;
+use torii_storage::utils::hex_felt;
 use tracing::{error, info};
 
 use crate::error::Error;
@@ -88,7 +89,7 @@ where
             target: LOG_TARGET,
             namespace = %model.namespace,
             name = %model.name,
-            system = %format!("{:#x}", Felt::from(event.system_address)),
+            system = %hex_felt(&Felt::from(event.system_address)),
             "Store event message."
         );
 
@@ -100,9 +101,9 @@ where
                 target: LOG_TARGET,
                 namespace = %model.namespace,
                 name = %model.name,
-                selector = %format!("{:#x}", model.selector),
-                model_contract_address = %format!("{:#x}", model.contract_address),
-                class_hash = %format!("{:#x}", model.class_hash),
+                selector = %hex_felt(&model.selector),
+                model_contract_address = %hex_felt(&model.contract_address),
+                class_hash = %hex_felt(&model.class_hash),
                 use_legacy_store = model.use_legacy_store,
                 raw_keys = ?event.keys,
                 raw_values = ?event.values,

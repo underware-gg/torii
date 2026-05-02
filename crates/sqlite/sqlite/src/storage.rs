@@ -10,6 +10,7 @@ use dojo_world::{config::WorldMetadata, contracts::abigen::model::Layout};
 use sqlx::{sqlite::SqliteRow, FromRow, Row};
 use starknet::core::types::U256;
 use starknet_crypto::{poseidon_hash_many, Felt};
+use torii_cache::CacheError;
 use torii_math::I256;
 use torii_proto::{
     schema::Entity, Activity, ActivityQuery, AggregationEntry, AggregationQuery, BalanceId,
@@ -20,8 +21,11 @@ use torii_proto::{
     TokenTransferQuery, Transaction, TransactionCall, TransactionQuery,
 };
 use torii_sqlite_types::{HookEvent, Model as SQLModel};
-use torii_storage::{utils::format_world_scoped_id, ReadOnlyStorage, Storage, StorageError};
-use tracing::warn;
+use torii_storage::{
+    utils::{format_world_scoped_id, hex_felt},
+    ReadOnlyStorage, Storage, StorageError,
+};
+use tracing::debug;
 
 use crate::{
     constants::{
@@ -66,14 +70,23 @@ impl ReadOnlyStorage for Sql {
         selector: Felt,
     ) -> Result<Option<Model>, StorageError> {
         if let Some(cache) = &self.cache {
-            if let Ok(model) = cache.model(world_address, selector).await {
-                return Ok(Some(model));
-            } else {
-                warn!(
-                    target: LOG_TARGET,
-                    model_selector = %format!("{:#x}", selector),
-                    "Failed to get model from cache, falling back to database."
-                );
+            match cache.model(world_address, selector).await {
+                Ok(model) => return Ok(Some(model)),
+                Err(CacheError::ModelNotFound(_)) => {
+                    debug!(
+                        target: LOG_TARGET,
+                        model_selector = %hex_felt(&selector),
+                        "Model missing from cache, falling back to database."
+                    );
+                }
+                Err(error) => {
+                    debug!(
+                        target: LOG_TARGET,
+                        model_selector = %hex_felt(&selector),
+                        error = ?error,
+                        "Failed to get model from cache, falling back to database."
+                    );
+                }
             }
         }
 
@@ -107,14 +120,17 @@ impl ReadOnlyStorage for Sql {
     ) -> Result<Vec<Model>, StorageError> {
         // Try cache first
         if let Some(cache) = &self.cache {
-            if let Ok(models) = cache.models(world_addresses, selectors).await {
-                return Ok(models);
-            } else {
-                warn!(
-                    target: LOG_TARGET,
-                    selectors = ?selectors.iter().map(|s| format!("{:#x}", s)).collect::<Vec<_>>(),
-                    "Failed to get models from cache, falling back to database.",
-                );
+            match cache.models(world_addresses, selectors).await {
+                Ok(models) => return Ok(models),
+                Err(error) => {
+                    debug!(
+                        target: LOG_TARGET,
+                        selector_count = selectors.len(),
+                        world_count = world_addresses.len(),
+                        error = ?error,
+                        "Failed to get models from cache, falling back to database.",
+                    );
+                }
             }
         }
 

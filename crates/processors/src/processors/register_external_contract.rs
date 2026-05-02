@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use dojo_world::contracts::abigen::world::Event as WorldEvent;
 use starknet::core::types::Event;
 use torii_proto::ContractType;
+use torii_storage::utils::hex_felt;
 use tracing::{debug, info};
 
 use crate::error::Error;
@@ -67,7 +68,7 @@ where
                 namespace = %namespace,
                 contract_name = %contract_name,
                 instance_name = %instance_name,
-                contract_address = %format!("{:#x}", event.contract_address.0),
+                contract_address = %hex_felt(&event.contract_address.0),
                 "Skipping external contract registration - not enabled or not whitelisted."
             );
             return Ok(());
@@ -81,7 +82,7 @@ where
             namespace = %namespace,
             contract_name = %contract_name,
             instance_name = %instance_name,
-            contract_address = %format!("{:#x}", event.contract_address.0),
+            contract_address = %hex_felt(&event.contract_address.0),
             "Registered external contract."
         );
 
@@ -90,9 +91,9 @@ where
             namespace = %namespace,
             contract_name = %contract_name,
             instance_name = %instance_name,
-            contract_selector = %format!("{:#x}", event.contract_selector),
-            class_hash = %format!("{:#x}", event.class_hash.0),
-            contract_address = %format!("{:#x}", event.contract_address.0),
+            contract_selector = %hex_felt(&event.contract_selector),
+            class_hash = %hex_felt(&event.class_hash.0),
+            contract_address = %hex_felt(&event.contract_address.0),
             block_number = %event.block_number,
             "Registered external contract details."
         );

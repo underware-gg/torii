@@ -1,5 +1,18 @@
+use std::{fmt, str::FromStr};
+
 use starknet::core::types::Felt;
-use std::str::FromStr;
+
+struct HexFelt<'a>(&'a Felt);
+
+impl fmt::Display for HexFelt<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:#x}", self.0)
+    }
+}
+
+pub fn hex_felt(felt: &Felt) -> impl fmt::Display + '_ {
+    HexFelt(felt)
+}
 
 pub fn format_event_id(
     block_number: u64,
@@ -67,4 +80,16 @@ pub fn parse_world_scoped_id(scoped_id: &str) -> Result<(Felt, Felt), Box<dyn st
         return Err("Invalid world-scoped ID format: expected 'world_address:selector'".into());
     }
     Ok((Felt::from_str(parts[0])?, Felt::from_str(parts[1])?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_felt_formats_as_prefixed_lower_hex() {
+        let felt = Felt::from_hex("0x123").unwrap();
+
+        assert_eq!(hex_felt(&felt).to_string(), "0x123");
+    }
 }

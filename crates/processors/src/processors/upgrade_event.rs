@@ -8,6 +8,7 @@ use dojo_world::contracts::WorldContractReader;
 use starknet::core::types::{BlockId, Event};
 use starknet::providers::Provider;
 use torii_proto::Model;
+use torii_storage::utils::hex_felt;
 use tracing::{debug, info};
 
 use crate::task_manager::TaskId;
@@ -103,8 +104,8 @@ where
             target: LOG_TARGET,
             namespace = %namespace,
             name = %name,
-            contract_address = %format!("{:#x}", event.address.0),
-            class_hash = %format!("{:#x}", event.class_hash.0),
+            contract_address = %hex_felt(&event.address.0),
+            class_hash = %hex_felt(&event.class_hash.0),
             "Upgraded event."
         );
 
