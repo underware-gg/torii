@@ -58,3 +58,4 @@ scarb-interop.workspace = true
 scarb-metadata-ext .workspace = true
 tempfile.workspace = true
 torii-indexer.workspace = true
+torii-storage = { workspace = true, features = ["test-utils"] }

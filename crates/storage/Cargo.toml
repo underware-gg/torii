@@ -4,6 +4,9 @@ edition.workspace = true
 repository.workspace = true
 version.workspace = true
 
+[features]
+test-utils = []
+
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true

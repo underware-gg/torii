@@ -2633,149 +2633,17 @@ impl Sql {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
     use std::str::FromStr;
     use std::sync::Arc;
 
-    use async_trait::async_trait;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use tempfile::TempDir;
     use tokio::sync::mpsc::unbounded_channel;
     use torii_cache::{CacheError, InMemoryCache, ReadOnlyCache};
-    use torii_proto::{
-        Achievement, AchievementQuery, PlayerAchievementEntry, PlayerAchievementQuery,
-    };
-    use torii_storage::utils::format_world_scoped_id;
+    use torii_storage::{test_utils::ReadOnlyStorageStub, utils::format_world_scoped_id};
 
     use super::*;
     use crate::SqlConfig;
-
-    #[derive(Debug)]
-    struct EmptyStorage;
-
-    #[async_trait]
-    impl ReadOnlyStorage for EmptyStorage {
-        fn as_read_only(&self) -> &dyn ReadOnlyStorage {
-            self
-        }
-
-        async fn model(&self, _world_address: Felt, _model: Felt) -> Result<Model, StorageError> {
-            Err(Box::new(sqlx::Error::RowNotFound))
-        }
-
-        async fn model_optional(
-            &self,
-            _world_address: Felt,
-            _model: Felt,
-        ) -> Result<Option<Model>, StorageError> {
-            Ok(None)
-        }
-
-        async fn models(
-            &self,
-            _world_addresses: &[Felt],
-            _selectors: &[Felt],
-        ) -> Result<Vec<Model>, StorageError> {
-            Ok(vec![])
-        }
-
-        async fn token_ids(&self) -> Result<HashSet<TokenId>, StorageError> {
-            Ok(HashSet::new())
-        }
-
-        async fn controllers(
-            &self,
-            _query: &ControllerQuery,
-        ) -> Result<Page<Controller>, StorageError> {
-            unimplemented!()
-        }
-
-        async fn contracts(&self, _query: &ContractQuery) -> Result<Vec<Contract>, StorageError> {
-            unimplemented!()
-        }
-
-        async fn tokens(&self, _query: &TokenQuery) -> Result<Page<Token>, StorageError> {
-            unimplemented!()
-        }
-
-        async fn token_balances(
-            &self,
-            _query: &TokenBalanceQuery,
-        ) -> Result<Page<TokenBalance>, StorageError> {
-            unimplemented!()
-        }
-
-        async fn token_contracts(
-            &self,
-            _query: &TokenContractQuery,
-        ) -> Result<Page<TokenContract>, StorageError> {
-            unimplemented!()
-        }
-
-        async fn token_transfers(
-            &self,
-            _query: &TokenTransferQuery,
-        ) -> Result<Page<TokenTransfer>, StorageError> {
-            unimplemented!()
-        }
-
-        async fn transactions(
-            &self,
-            _query: &TransactionQuery,
-        ) -> Result<Page<Transaction>, StorageError> {
-            unimplemented!()
-        }
-
-        async fn events(&self, _query: EventQuery) -> Result<Page<Event>, StorageError> {
-            unimplemented!()
-        }
-
-        async fn entities(&self, _query: &Query) -> Result<Page<Entity>, StorageError> {
-            unimplemented!()
-        }
-
-        async fn event_messages(&self, _query: &Query) -> Result<Page<Entity>, StorageError> {
-            unimplemented!()
-        }
-
-        async fn entity_model(
-            &self,
-            _world_address: Felt,
-            _entity_id: Felt,
-            _model_selector: Felt,
-        ) -> Result<Option<Ty>, StorageError> {
-            unimplemented!()
-        }
-
-        async fn aggregations(
-            &self,
-            _query: &AggregationQuery,
-        ) -> Result<Page<AggregationEntry>, StorageError> {
-            unimplemented!()
-        }
-
-        async fn activities(&self, _query: &ActivityQuery) -> Result<Page<Activity>, StorageError> {
-            unimplemented!()
-        }
-
-        async fn achievements(
-            &self,
-            _query: &AchievementQuery,
-        ) -> Result<Page<Achievement>, StorageError> {
-            unimplemented!()
-        }
-
-        async fn player_achievements(
-            &self,
-            _query: &PlayerAchievementQuery,
-        ) -> Result<Page<PlayerAchievementEntry>, StorageError> {
-            unimplemented!()
-        }
-
-        async fn search(&self, _query: &SearchQuery) -> Result<SearchResponse, StorageError> {
-            unimplemented!()
-        }
-    }
 
     async fn setup_sql() -> (TempDir, sqlx::Pool<sqlx::Sqlite>, Sql) {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -2846,7 +2714,11 @@ mod tests {
     #[tokio::test]
     async fn model_optional_repopulates_cache_after_database_fallback() {
         let (_temp_dir, pool, sql_no_cache) = setup_sql().await;
-        let cache = Arc::new(InMemoryCache::new(Arc::new(EmptyStorage)).await.unwrap());
+        let cache = Arc::new(
+            InMemoryCache::new(Arc::new(ReadOnlyStorageStub::new()))
+                .await
+                .unwrap(),
+        );
         let world = Felt::from(0xc_u8);
         let selector = Felt::from(0xd_u8);
 

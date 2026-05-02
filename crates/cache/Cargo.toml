@@ -18,3 +18,6 @@ torii-sqlite-types.workspace = true
 serde_json.workspace = true
 torii-storage.workspace = true
 torii-proto.workspace = true
+
+[dev-dependencies]
+torii-storage = { workspace = true, features = ["test-utils"] }

@@ -529,147 +529,7 @@ pub fn get_entrypoint_name_from_class(class: &ClassAbi, selector: Felt) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-    use torii_proto::{
-        Achievement, AchievementQuery, Activity, ActivityQuery, AggregationEntry, AggregationQuery,
-        Contract, ContractQuery, Controller, ControllerQuery, Event, EventQuery, Page,
-        PlayerAchievementEntry, PlayerAchievementQuery, Query, SearchQuery, SearchResponse, Token,
-        TokenBalance, TokenBalanceQuery, TokenContract, TokenContractQuery, TokenQuery,
-        TokenTransfer, TokenTransferQuery, Transaction, TransactionQuery,
-    };
-    use torii_storage::StorageError;
-
-    /// Test stub that only services `token_ids` and `models`. The rest of `ReadOnlyStorage`
-    /// panics — these tests do not exercise any of those methods.
-    #[derive(Debug)]
-    struct StubStorage {
-        token_ids: Mutex<HashSet<TokenId>>,
-        models: Mutex<Vec<Model>>,
-    }
-
-    impl StubStorage {
-        fn new() -> Arc<Self> {
-            Arc::new(Self {
-                token_ids: Mutex::new(HashSet::new()),
-                models: Mutex::new(Vec::new()),
-            })
-        }
-
-        fn set_committed_tokens(&self, ids: Vec<TokenId>) {
-            *self.token_ids.lock().unwrap() = ids.into_iter().collect();
-        }
-    }
-
-    #[async_trait]
-    impl ReadOnlyStorage for StubStorage {
-        fn as_read_only(&self) -> &dyn ReadOnlyStorage {
-            self
-        }
-
-        async fn model(&self, _world: Felt, _selector: Felt) -> Result<Model, StorageError> {
-            unimplemented!()
-        }
-
-        async fn model_optional(
-            &self,
-            _world: Felt,
-            _selector: Felt,
-        ) -> Result<Option<Model>, StorageError> {
-            unimplemented!()
-        }
-
-        async fn models(
-            &self,
-            _world_addresses: &[Felt],
-            _selectors: &[Felt],
-        ) -> Result<Vec<Model>, StorageError> {
-            Ok(self.models.lock().unwrap().clone())
-        }
-
-        async fn token_ids(&self) -> Result<HashSet<TokenId>, StorageError> {
-            Ok(self.token_ids.lock().unwrap().clone())
-        }
-
-        async fn controllers(
-            &self,
-            _query: &ControllerQuery,
-        ) -> Result<Page<Controller>, StorageError> {
-            unimplemented!()
-        }
-        async fn contracts(&self, _query: &ContractQuery) -> Result<Vec<Contract>, StorageError> {
-            unimplemented!()
-        }
-        async fn tokens(&self, _query: &TokenQuery) -> Result<Page<Token>, StorageError> {
-            unimplemented!()
-        }
-        async fn token_balances(
-            &self,
-            _query: &TokenBalanceQuery,
-        ) -> Result<Page<TokenBalance>, StorageError> {
-            unimplemented!()
-        }
-        async fn token_contracts(
-            &self,
-            _query: &TokenContractQuery,
-        ) -> Result<Page<TokenContract>, StorageError> {
-            unimplemented!()
-        }
-        async fn token_transfers(
-            &self,
-            _query: &TokenTransferQuery,
-        ) -> Result<Page<TokenTransfer>, StorageError> {
-            unimplemented!()
-        }
-        async fn transactions(
-            &self,
-            _query: &TransactionQuery,
-        ) -> Result<Page<Transaction>, StorageError> {
-            unimplemented!()
-        }
-        async fn events(&self, _query: EventQuery) -> Result<Page<Event>, StorageError> {
-            unimplemented!()
-        }
-        async fn entities(&self, _query: &Query) -> Result<Page<Entity>, StorageError> {
-            unimplemented!()
-        }
-        async fn event_messages(&self, _query: &Query) -> Result<Page<Entity>, StorageError> {
-            unimplemented!()
-        }
-        async fn entity_model(
-            &self,
-            _world: Felt,
-            _entity_id: Felt,
-            _model_selector: Felt,
-        ) -> Result<Option<dojo_types::schema::Ty>, StorageError> {
-            unimplemented!()
-        }
-        async fn aggregations(
-            &self,
-            _query: &AggregationQuery,
-        ) -> Result<Page<AggregationEntry>, StorageError> {
-            unimplemented!()
-        }
-        async fn activities(&self, _query: &ActivityQuery) -> Result<Page<Activity>, StorageError> {
-            unimplemented!()
-        }
-        async fn achievements(
-            &self,
-            _query: &AchievementQuery,
-        ) -> Result<Page<Achievement>, StorageError> {
-            unimplemented!()
-        }
-        async fn player_achievements(
-            &self,
-            _query: &PlayerAchievementQuery,
-        ) -> Result<Page<PlayerAchievementEntry>, StorageError> {
-            unimplemented!()
-        }
-        async fn search(&self, _query: &SearchQuery) -> Result<SearchResponse, StorageError> {
-            unimplemented!()
-        }
-    }
-
-    use torii_proto::schema::Entity;
+    use torii_storage::test_utils::ReadOnlyStorageStub;
 
     fn token_id(byte: u8) -> TokenId {
         TokenId::Contract(Felt::from(byte))
@@ -680,9 +540,9 @@ mod tests {
     /// `reset_token_registry` must restore the cache to "what storage actually has".
     #[tokio::test]
     async fn reset_token_registry_drops_uncommitted_marks() {
-        let storage = StubStorage::new();
+        let storage = Arc::new(ReadOnlyStorageStub::new());
         // T1 was registered in a previous (committed) chunk.
-        storage.set_committed_tokens(vec![token_id(1)]);
+        storage.set_token_ids(vec![token_id(1)]);
 
         let cache = InMemoryCache::new(storage.clone()).await.unwrap();
 
@@ -702,7 +562,7 @@ mod tests {
     /// reflects the committed (rolled-back) state.
     #[tokio::test]
     async fn clear_models_empties_the_cache() {
-        let storage = StubStorage::new();
+        let storage = Arc::new(ReadOnlyStorageStub::new());
         let cache = InMemoryCache::new(storage).await.unwrap();
 
         let world = Felt::from(0xa);
@@ -733,8 +593,8 @@ mod tests {
 
     #[tokio::test]
     async fn reset_to_committed_storage_restores_rollback_sensitive_cache_state() {
-        let storage = StubStorage::new();
-        storage.set_committed_tokens(vec![token_id(1)]);
+        let storage = Arc::new(ReadOnlyStorageStub::new());
+        storage.set_token_ids(vec![token_id(1)]);
 
         let cache = InMemoryCache::new(storage).await.unwrap();
 

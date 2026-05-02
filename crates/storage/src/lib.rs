@@ -21,6 +21,8 @@ use torii_proto::{
     TransactionQuery,
 };
 
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_utils;
 pub mod utils;
 
 pub use torii_proto as proto;
