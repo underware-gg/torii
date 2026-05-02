@@ -1,5 +1,3 @@
-use std::hash::{DefaultHasher, Hash, Hasher};
-
 use async_trait::async_trait;
 use cainome::cairo_serde::Error as CainomeError;
 use dojo_types::schema::Ty;
@@ -11,7 +9,7 @@ use starknet::providers::{Provider, ProviderError};
 use torii_proto::Model;
 use tracing::{debug, info};
 
-use crate::task_manager::TaskId;
+use crate::task_manager::{task_id_from_address_and_key, TaskId};
 use crate::EventProcessor;
 use crate::{EventProcessorContext, Result};
 
@@ -36,10 +34,7 @@ where
     }
 
     fn task_identifier(&self, event: &Event) -> TaskId {
-        let mut hasher = DefaultHasher::new();
-        event.from_address.hash(&mut hasher);
-        event.keys[1].hash(&mut hasher); // Use the model selector to create a unique ID
-        hasher.finish()
+        task_id_from_address_and_key(event.from_address, event.keys[1])
     }
 
     async fn process(&self, ctx: &EventProcessorContext<P>) -> Result<()> {

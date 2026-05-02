@@ -42,6 +42,7 @@ use torii_indexer_fetcher::{
     FetchRangeBlock, FetchRangeResult, FetchResult, FetchTransaction, Fetcher, FetcherConfig,
 };
 use torii_processors::error::Error as ProcessorError;
+use torii_processors::task_manager::task_id_from_address_and_key;
 use torii_processors::{
     EventProcessor, EventProcessorContext, Processors, Result as ProcessorResult,
 };
@@ -1407,13 +1408,6 @@ async fn count_table(table_name: &str, pool: &sqlx::Pool<sqlx::Sqlite>) -> i64 {
     count.0
 }
 
-fn hashed_task_identifier(from_address: Felt, discriminator: Felt) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    from_address.hash(&mut hasher);
-    discriminator.hash(&mut hasher);
-    hasher.finish()
-}
-
 fn schema_has_member(schema: &Ty, member_name: &str) -> bool {
     match schema {
         Ty::Struct(struct_ty) => struct_ty
@@ -1456,7 +1450,7 @@ where
     }
 
     fn task_identifier(&self, event: &Event) -> u64 {
-        hashed_task_identifier(event.from_address, event.keys[1])
+        task_id_from_address_and_key(event.from_address, event.keys[1])
     }
 
     async fn process(&self, ctx: &EventProcessorContext<P>) -> ProcessorResult<()> {
@@ -1588,7 +1582,7 @@ where
     }
 
     fn task_identifier(&self, event: &Event) -> u64 {
-        hashed_task_identifier(event.from_address, event.keys[1])
+        task_id_from_address_and_key(event.from_address, event.keys[1])
     }
 
     async fn process(&self, _ctx: &EventProcessorContext<P>) -> ProcessorResult<()> {

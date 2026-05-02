@@ -6,7 +6,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use tracing::info;
 
 use crate::error::Error;
-use crate::task_manager::TaskId;
+use crate::task_manager::{task_id_from_address_and_key, TaskId};
 use crate::{EventProcessor, EventProcessorConfig, EventProcessorContext, IndexingMode};
 
 pub(crate) const LOG_TARGET: &str = "torii::indexer::processors::store_del_record";
@@ -36,10 +36,10 @@ where
     }
 
     fn task_dependencies(&self, event: &Event) -> Vec<TaskId> {
-        let mut hasher = DefaultHasher::new();
-        event.from_address.hash(&mut hasher);
-        event.keys[1].hash(&mut hasher); // Use the model selector to create a unique ID
-        vec![hasher.finish()] // Return the dependency on the register_model task
+        vec![task_id_from_address_and_key(
+            event.from_address,
+            event.keys[1],
+        )] // Return the dependency on the register_model task
     }
 
     fn indexing_mode(&self, event: &Event, config: &EventProcessorConfig) -> IndexingMode {

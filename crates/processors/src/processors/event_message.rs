@@ -10,7 +10,7 @@ use torii_storage::utils::hex_felt;
 use tracing::{error, info};
 
 use crate::error::Error;
-use crate::task_manager::TaskId;
+use crate::task_manager::{task_id_from_address_and_key, TaskId};
 use crate::{EventProcessor, EventProcessorConfig, EventProcessorContext, IndexingMode};
 use metrics::counter;
 
@@ -47,11 +47,10 @@ where
     }
 
     fn task_dependencies(&self, event: &Event) -> Vec<TaskId> {
-        let mut hasher = DefaultHasher::new();
-        event.from_address.hash(&mut hasher);
-        // selector
-        event.keys[1].hash(&mut hasher);
-        vec![hasher.finish()]
+        vec![task_id_from_address_and_key(
+            event.from_address,
+            event.keys[1],
+        )]
     }
 
     fn indexing_mode(&self, event: &Event, config: &EventProcessorConfig) -> IndexingMode {

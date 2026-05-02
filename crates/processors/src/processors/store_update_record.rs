@@ -7,7 +7,7 @@ use starknet::core::types::Event;
 use starknet::providers::Provider;
 use tracing::info;
 
-use crate::task_manager::TaskId;
+use crate::task_manager::{task_id_from_address_and_key, TaskId};
 use crate::{EventProcessor, EventProcessorConfig, EventProcessorContext};
 use crate::{IndexingMode, Result};
 use metrics::counter;
@@ -41,10 +41,10 @@ where
     }
 
     fn task_dependencies(&self, event: &Event) -> Vec<TaskId> {
-        let mut hasher = DefaultHasher::new();
-        event.from_address.hash(&mut hasher);
-        event.keys[1].hash(&mut hasher); // Use the model selector to create a unique ID
-        vec![hasher.finish()] // Return the dependency on the register_model task
+        vec![task_id_from_address_and_key(
+            event.from_address,
+            event.keys[1],
+        )] // Return the dependency on the register_model task
     }
 
     fn indexing_mode(&self, event: &Event, config: &EventProcessorConfig) -> IndexingMode {
