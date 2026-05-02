@@ -1775,9 +1775,7 @@ async fn test_rollback_replays_model_upgrade_after_cache_reset() {
     assert!(!table_has_column(&pool, &table_name, added_member).await);
 
     db.rollback().await.unwrap();
-    cache.clear_balances_diff().await;
-    cache.clear_models().await;
-    cache.reset_token_registry().await.unwrap();
+    cache.reset_to_committed_storage().await.unwrap();
 
     assert!(matches!(
         cache.model(world_address, model_selector).await,
@@ -1944,9 +1942,7 @@ async fn test_rollback_resets_token_registry_for_retry(sequencer: &RunnerCtx) {
     );
 
     db.rollback().await.unwrap();
-    cache.clear_balances_diff().await;
-    cache.clear_models().await;
-    cache.reset_token_registry().await.unwrap();
+    cache.reset_to_committed_storage().await.unwrap();
 
     assert_eq!(cache.erc_cache.token_id_registry.len(), 0);
 

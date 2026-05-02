@@ -56,6 +56,9 @@ pub trait Cache: ReadOnlyCache + Send + Sync + std::fmt::Debug {
     /// Clear all models from the cache.
     async fn clear_models(&self);
 
+    /// Restore rollback-sensitive cache state to the last committed storage view.
+    async fn reset_to_committed_storage(&self) -> Result<(), CacheError>;
+
     /// Mark a token as registered.
     async fn mark_token_registered(&self, token_id: TokenId);
 
@@ -137,6 +140,12 @@ impl Cache for InMemoryCache {
 
     async fn clear_models(&self) {
         self.model_cache.clear().await
+    }
+
+    async fn reset_to_committed_storage(&self) -> Result<(), CacheError> {
+        self.clear_balances_diff().await;
+        self.clear_models().await;
+        self.reset_token_registry().await
     }
 
     async fn mark_token_registered(&self, token_id: TokenId) {
@@ -720,5 +729,55 @@ mod tests {
             cache.model(world, selector).await,
             Err(CacheError::ModelNotFound(s)) if s == selector
         ));
+    }
+
+    #[tokio::test]
+    async fn reset_to_committed_storage_restores_rollback_sensitive_cache_state() {
+        let storage = StubStorage::new();
+        storage.set_committed_tokens(vec![token_id(1)]);
+
+        let cache = InMemoryCache::new(storage).await.unwrap();
+
+        let world = Felt::from(0xa);
+        let selector = Felt::from(0xb);
+        let model = Model {
+            world_address: world,
+            namespace: "ns".into(),
+            name: "M".into(),
+            selector,
+            class_hash: Felt::ZERO,
+            contract_address: Felt::ZERO,
+            packed_size: 0,
+            unpacked_size: 0,
+            layout: dojo_world::contracts::abigen::model::Layout::Fixed(vec![]),
+            schema: dojo_types::schema::Ty::Tuple(vec![]),
+            use_legacy_store: true,
+        };
+        cache.register_model(world, selector, model).await;
+        cache.mark_token_registered(token_id(2)).await;
+        cache
+            .update_balance_diff(
+                token_id(1),
+                Felt::ZERO,
+                Felt::from(0x2_u8),
+                U256::from(3_u8),
+            )
+            .await;
+
+        assert!(cache.model(world, selector).await.is_ok());
+        assert!(cache.is_token_registered(&token_id(2)).await);
+        assert!(!cache.balances_diff().await.is_empty());
+        assert!(!cache.total_supply_diff().await.is_empty());
+
+        cache.reset_to_committed_storage().await.unwrap();
+
+        assert!(matches!(
+            cache.model(world, selector).await,
+            Err(CacheError::ModelNotFound(s)) if s == selector
+        ));
+        assert!(cache.is_token_registered(&token_id(1)).await);
+        assert!(!cache.is_token_registered(&token_id(2)).await);
+        assert!(cache.balances_diff().await.is_empty());
+        assert!(cache.total_supply_diff().await.is_empty());
     }
 }
