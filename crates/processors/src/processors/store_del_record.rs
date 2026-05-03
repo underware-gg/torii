@@ -6,7 +6,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use tracing::info;
 
 use crate::error::Error;
-use crate::task_manager::{task_id_from_address_and_key, TaskId};
+use crate::task_manager::{task_id_from_address_and_key, task_id_from_address_and_keys, TaskId};
 use crate::{EventProcessor, EventProcessorConfig, EventProcessorContext, IndexingMode};
 
 pub(crate) const LOG_TARGET: &str = "torii::indexer::processors::store_del_record";
@@ -28,11 +28,7 @@ where
     }
 
     fn task_identifier(&self, event: &Event) -> TaskId {
-        let mut hasher = DefaultHasher::new();
-        event.from_address.hash(&mut hasher);
-        event.keys[1].hash(&mut hasher);
-        event.keys[2].hash(&mut hasher);
-        hasher.finish()
+        task_id_from_address_and_keys(event.from_address, &event.keys[1..=2])
     }
 
     fn task_dependencies(&self, event: &Event) -> Vec<TaskId> {

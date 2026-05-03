@@ -22,11 +22,17 @@ pub type TaskId = u64;
 pub type TaskPriority = usize;
 
 pub fn task_id_from_address_and_key(from_address: Felt, key: Felt) -> TaskId {
+    task_id_from_address_and_keys(from_address, &[key])
+}
+
+pub fn task_id_from_address_and_keys(from_address: Felt, keys: &[Felt]) -> TaskId {
     use std::hash::{DefaultHasher, Hash, Hasher};
 
     let mut hasher = DefaultHasher::new();
     from_address.hash(&mut hasher);
-    key.hash(&mut hasher);
+    for key in keys {
+        key.hash(&mut hasher);
+    }
     hasher.finish()
 }
 
@@ -305,5 +311,19 @@ mod tests {
         let swapped = task_id_from_address_and_key(key, from_address);
 
         assert_ne!(forward, swapped);
+    }
+
+    #[test]
+    fn task_id_from_address_and_keys_hashes_in_order() {
+        let from_address = Felt::from_hex("0x123").unwrap();
+        let keys = [
+            Felt::from_hex("0x456").unwrap(),
+            Felt::from_hex("0x789").unwrap(),
+        ];
+
+        let forward = task_id_from_address_and_keys(from_address, &keys);
+        let reversed = task_id_from_address_and_keys(from_address, &[keys[1], keys[0]]);
+
+        assert_ne!(forward, reversed);
     }
 }
