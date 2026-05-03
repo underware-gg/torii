@@ -4,11 +4,11 @@ use dojo_types::schema::Ty;
 use dojo_world::config::WorldMetadata;
 use dojo_world::contracts::abigen::model::Layout;
 use starknet::core::types::{Felt, U256};
-use std::fmt::Debug;
 use std::{
     collections::{HashMap, HashSet},
-    error::Error,
+    fmt::Debug,
 };
+use thiserror::Error;
 use torii_math::I256;
 use torii_proto::schema::Entity;
 
@@ -27,26 +27,41 @@ pub mod utils;
 
 pub use torii_proto as proto;
 
-pub type StorageError = Box<dyn Error + Send + Sync>;
+#[derive(Debug, Error)]
+pub enum StorageError {
+    #[error("Model not found: world={world_address:#x}, selector={selector:#x}")]
+    ModelNotFound { world_address: Felt, selector: Felt },
+    #[error(transparent)]
+    Sql(#[from] sqlx::Error),
+    #[error(transparent)]
+    Internal(#[from] anyhow::Error),
+}
+
+impl StorageError {
+    pub fn model_not_found(world_address: Felt, selector: Felt) -> Self {
+        Self::ModelNotFound {
+            world_address,
+            selector,
+        }
+    }
+
+    pub fn other<E>(error: E) -> Self
+    where
+        E: Into<anyhow::Error>,
+    {
+        Self::Internal(error.into())
+    }
+}
 
 #[async_trait]
 pub trait ReadOnlyStorage: Send + Sync + Debug {
     fn as_read_only(&self) -> &dyn ReadOnlyStorage;
 
     /// Returns the model metadata for the storage.
-    async fn model(&self, world_address: Felt, model: Felt) -> Result<Model, StorageError>;
-
-    /// Returns the model metadata if it is registered in the storage, or `Ok(None)`
-    /// when no row exists for `(world_address, selector)`.
     ///
-    /// Only "no such row" returns `Ok(None)` — any other failure (DB error, decode error,
-    /// connection issue, etc.) propagates as `Err`. Callers that need to distinguish
-    /// "model is unknown" from "lookup failed" should prefer this method over [`model`].
-    async fn model_optional(
-        &self,
-        world_address: Felt,
-        model: Felt,
-    ) -> Result<Option<Model>, StorageError>;
+    /// `Err(StorageError::ModelNotFound { .. })` indicates that no row exists for
+    /// `(world_address, selector)`. Other variants indicate an actual lookup failure.
+    async fn model(&self, world_address: Felt, model: Felt) -> Result<Model, StorageError>;
 
     /// Returns the models for the storage.
     /// If world_addresses is empty, returns models from all worlds.

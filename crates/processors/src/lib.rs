@@ -47,13 +47,11 @@ impl<P: Provider + Sync + Send + 'static> EventProcessorContext<P> {
     /// `Err(Error::ModelNotFound)` — model is unknown and namespace filtering is off,
     /// so the caller should fail loud.
     pub async fn resolve_model_or_skip(&self, selector: Felt) -> Result<Option<Model>> {
-        match self
-            .storage
-            .model_optional(self.contract_address, selector)
-            .await?
-        {
-            Some(model) => Ok(Some(model)),
-            None if !self.config.namespaces.is_empty() => {
+        match self.storage.model(self.contract_address, selector).await {
+            Ok(model) => Ok(Some(model)),
+            Err(torii_storage::StorageError::ModelNotFound { .. })
+                if !self.config.namespaces.is_empty() =>
+            {
                 debug!(
                     target: "torii::processors::resolve_model",
                     selector = %selector,
@@ -61,7 +59,10 @@ impl<P: Provider + Sync + Send + 'static> EventProcessorContext<P> {
                 );
                 Ok(None)
             }
-            None => Err(Error::ModelNotFound(selector)),
+            Err(torii_storage::StorageError::ModelNotFound { .. }) => {
+                Err(Error::ModelNotFound(selector))
+            }
+            Err(error) => Err(error.into()),
         }
     }
 }

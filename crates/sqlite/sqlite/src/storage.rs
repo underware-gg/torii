@@ -58,20 +58,9 @@ impl ReadOnlyStorage for Sql {
 
     /// Returns the model metadata for the storage.
     async fn model(&self, world_address: Felt, selector: Felt) -> Result<Model, StorageError> {
-        match self.model_optional(world_address, selector).await? {
-            Some(model) => Ok(model),
-            None => Err(Box::new(sqlx::Error::RowNotFound)),
-        }
-    }
-
-    async fn model_optional(
-        &self,
-        world_address: Felt,
-        selector: Felt,
-    ) -> Result<Option<Model>, StorageError> {
         if let Some(cache) = &self.cache {
             match cache.model(world_address, selector).await {
-                Ok(model) => return Ok(Some(model)),
+                Ok(model) => return Ok(model),
                 Err(CacheError::ModelNotFound(_)) => {
                     debug!(
                         target: LOG_TARGET,
@@ -96,7 +85,7 @@ impl ReadOnlyStorage for Sql {
             .await?;
 
         let Some(model) = row else {
-            return Ok(None);
+            return Err(StorageError::model_not_found(world_address, selector));
         };
         let model: torii_proto::Model = model.into();
 
@@ -107,7 +96,7 @@ impl ReadOnlyStorage for Sql {
                 .await;
         }
 
-        Ok(Some(model))
+        Ok(model)
     }
 
     /// Returns the models for the storage.
@@ -2285,9 +2274,8 @@ impl Storage for Sql {
             TransactionReceipt::Deploy(r) => &r.execution_resources,
             TransactionReceipt::DeployAccount(r) => &r.execution_resources,
         };
-        let execution_resources_json = serde_json::to_string(execution_resources).map_err(|e| {
-            StorageError::from(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-        })?;
+        let execution_resources_json =
+            serde_json::to_string(execution_resources).map_err(StorageError::other)?;
 
         // Extract execution status and revert reason
         let (execution_status, revert_reason) = match execution_result {
@@ -2697,22 +2685,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_optional_returns_none_when_model_is_missing() {
+    async fn model_returns_model_not_found_when_model_is_missing() {
         let (_temp_dir, _pool, sql) = setup_sql().await;
         let world = Felt::from(0xa_u8);
         let selector = Felt::from(0xb_u8);
 
-        assert!(sql.model_optional(world, selector).await.unwrap().is_none());
-
         let err = sql.model(world, selector).await.unwrap_err();
         assert!(matches!(
-            err.downcast_ref::<sqlx::Error>(),
-            Some(sqlx::Error::RowNotFound)
+            err,
+            StorageError::ModelNotFound {
+                world_address,
+                selector: missing_selector
+            } if world_address == world && missing_selector == selector
         ));
     }
 
     #[tokio::test]
-    async fn model_optional_repopulates_cache_after_database_fallback() {
+    async fn model_repopulates_cache_after_database_fallback() {
         let (_temp_dir, pool, sql_no_cache) = setup_sql().await;
         let cache = Arc::new(
             InMemoryCache::new(Arc::new(ReadOnlyStorageStub::new()))
@@ -2730,7 +2719,7 @@ mod tests {
         ));
 
         let sql = sql_no_cache.with_cache(cache.clone());
-        let fetched = sql.model_optional(world, selector).await.unwrap().unwrap();
+        let fetched = sql.model(world, selector).await.unwrap();
         assert_eq!(fetched.world_address, world);
         assert_eq!(fetched.selector, selector);
         assert_eq!(fetched.namespace, "ns");
@@ -2746,7 +2735,7 @@ mod tests {
             .await
             .unwrap();
 
-        let cached_after_delete = sql.model_optional(world, selector).await.unwrap().unwrap();
+        let cached_after_delete = sql.model(world, selector).await.unwrap();
         assert_eq!(cached_after_delete.selector, selector);
         assert_eq!(cached_after_delete.name, "Model");
     }

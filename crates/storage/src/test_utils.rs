@@ -38,14 +38,6 @@ impl ReadOnlyStorage for ReadOnlyStorageStub {
         unimplemented!()
     }
 
-    async fn model_optional(
-        &self,
-        _world_address: Felt,
-        _selector: Felt,
-    ) -> Result<Option<Model>, StorageError> {
-        unimplemented!()
-    }
-
     async fn models(
         &self,
         _world_addresses: &[Felt],

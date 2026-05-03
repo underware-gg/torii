@@ -9563,7 +9563,9 @@ dependencies = [
  "dojo-types",
  "dojo-world",
  "serde",
+ "sqlx",
  "starknet",
+ "thiserror 1.0.63",
  "torii-math",
  "torii-proto",
 ]

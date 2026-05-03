@@ -1456,9 +1456,8 @@ where
     async fn process(&self, ctx: &EventProcessorContext<P>) -> ProcessorResult<()> {
         let current = ctx
             .storage
-            .model_optional(ctx.contract_address, self.selector)
-            .await?
-            .expect("seeded model must exist");
+            .model(ctx.contract_address, self.selector)
+            .await?;
 
         let mut upgraded_schema = current.schema.clone();
         let struct_ty = match &mut upgraded_schema {
