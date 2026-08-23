@@ -1,21 +1,21 @@
 # Versioning
 
 Two parallel version lines: **our version is ordinary semver that never resets**, and the
-**upstream base is computed, not declared**.
+**Torii base is inherited from the source being released**.
 
 ## Scheme
 
 - **Git tag:** `uw-v0.4.0`. The `uw-` prefix is required — this fork inherited every upstream
   `v1.8.x` tag, so ours must be distinguishable.
 - **Version output:** `0.4.0-uw (base torii v1.8.16, <sha>)`, stamped at build time.
-- **Upstream base:** derived with `git merge-base HEAD upstream/main`, described against upstream's
-  tags. It is never hand-maintained, so it cannot drift.
+- **Torii base:** the workspace Cargo version in the exact Underware commit being built. It is
+  inherited from the upstream source we integrated; the fork never maintains it separately.
 
 The `torii` binary stamps this single value at build time. It takes the newest reachable
-`uw-v*` tag for our version, finds the base through `upstream/main`, and includes the build's HEAD
-SHA. The same value is used by `torii --version`, the service endpoint, the HTTP User-Agent, and
-snapshot compatibility checks. A build without the needed Git metadata reports the unavailable
-component rather than guessing.
+`uw-v*` tag for our version, reads the Torii base from the source's Cargo metadata, and includes
+the build's HEAD SHA. The same value is used by `torii --version`, the service endpoint, the HTTP
+User-Agent, and snapshot compatibility checks. Without a reachable fork tag, the version is
+`unreleased-uw`; missing SHA metadata is reported as `unknown` rather than guessed.
 
 ## Rules
 
@@ -30,9 +30,11 @@ component rather than guessing.
 
 ## Releasing
 
-At a release boundary, rebase the validated `dev/*` branch onto `upstream/main`, promote it to
-`main`, then create and publish an annotated `uw-v<version>` tag. The tag is the source of the
-Underware version; never hand-edit it into `Cargo.toml` or source code.
+At a release boundary, promote the validated `dev/*` branch to `main`, then create and publish an
+annotated `uw-v<version>` tag on that exact `main` commit. Pushing the tag starts the Underware
+release workflow, which verifies that the tagged commit is the current `origin/main` tip before
+bundling it. The tag is the source of the Underware version; never hand-edit it into `Cargo.toml`
+or source code. A release build does not fetch or inspect official Torii.
 
 ## Why not encode both in one version string
 

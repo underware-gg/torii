@@ -25,6 +25,9 @@ by rebasing the active `dev/*` branch onto `upstream/main`, then promoting that 
 published `main`, preserve the release with its `uw-v*` tag and update the branch deliberately with
 `--force-with-lease`.
 
+This is development synchronization only. Once a commit is on `main`, an Underware release builds
+that local source and its `uw-v*` tag; it does not fetch or inspect `upstream`.
+
 ## Upstream contributions
 
 Branches for upstream pull requests are cut deliberately, one at a time, when something is actually
