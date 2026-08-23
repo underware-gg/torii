@@ -22,9 +22,11 @@ User-Agent, and snapshot compatibility checks. Without a reachable fork tag, the
 - **Do not edit the workspace `version` in `Cargo.toml`.** Upstream bumps it in every
   `release(prepare)` commit; owning that line buys a merge conflict on every sync for no gain,
   since this fork publishes no crates.
-- **Our counter never resets.** Rebasing onto a newer upstream release does not reset it — `0.4.0`
-  onto a new base is still `0.4.0`, and the next change is `0.5.0`. A resetting counter would
-  misrepresent our own history.
+- **Our counter never resets or reuses a release identity.** Every distinct released commit gets a
+  new version, including a sync to a newer upstream release. Once `uw-v0.4.0` exists, a
+  rebuilt base must become (for example) `0.5.0`; a release must be greater than every existing
+  Underware release tag. Tags are immutable evidence of the commit they released. A resetting or
+  reused counter would misrepresent our own history.
 - **`0.x` while we track upstream.** `1.0.0` is reserved for the point at which we stop tracking it
   — see below.
 
@@ -34,24 +36,32 @@ Promote the validated `dev/*` branch to `main` through the normal reviewed workf
 separate action from that promotion: check out the published local `main`, then run:
 
 ```bash
+./scripts/release.sh verify-settings
 ./scripts/release.sh check 0.4.0
 ./scripts/release.sh candidate 0.4.0
 ```
 
-`check` is read-only apart from refreshing the local `origin/main` reference. It requires a clean
-working tree, local `main` at exactly `origin/main`, and no remote `uw-v<version>` tag. `candidate`
-then creates or validates an annotated tag at that commit, verifies the release binary locally, and
-pushes **only the tag**. It never pushes a branch.
+`verify-settings` confirms that GitHub has a peer approval environment (no self-review or admin
+bypass), a reviewed non-force-pushable `main` with the required `release-policy` check, and
+immutable release tags. `check` performs the same safeguard check, and is otherwise read-only
+apart from refreshing the local `origin/main` reference. It requires a clean working tree, local
+`main` at exactly `origin/main`, and no remote `uw-v<version>` tag. `candidate` then creates or
+validates a canonical annotated tag at that commit, verifies the release binary locally, and pushes
+**only the tag**. It never pushes a branch.
 
-Pushing the tag starts the Underware release workflow, which verifies the tagged `origin/main` tip,
-bundles it, and creates a draft GitHub release. Publication requires approval through the protected
+Only one release workflow runs at a time. This preserves the order of publication and ensures the
+`latest` container tag always represents the last approved Underware release.
+
+Pushing the tag starts the Underware release workflow, which verifies that the tagged commit remains
+on `origin/main`, bundles it, and creates a draft GitHub release. Publication requires approval through the protected
 `underware-release` GitHub Environment; only then are the Docker image and the draft release
 published. The tag is the source of the Underware version; never hand-edit it into `Cargo.toml` or
 source code. A release build does not fetch or inspect official Torii.
 
 Before the first release, configure repository protections: require reviews for `main`, protect
 `uw-v*` tags against update and deletion, and configure `underware-release` with required reviewers.
-Without the environment protection, GitHub does not pause the publish job.
+`verify-settings` makes these external requirements observable; without the environment protection,
+GitHub does not pause the publish job.
 
 ## Why not encode both in one version string
 
@@ -63,6 +73,6 @@ lines separate avoids all of it, and degrades gracefully if we stop tracking ups
 ## Stopping tracking upstream
 
 `1.0.0` marks the point where this is no longer a downstream fork. The trigger is a decision, not
-an event: we have crossed it when we take a change we would never upstream. Cut it at a rebase
-boundary so history has a clean seam. At that point we also take ownership of the `Cargo.toml`
+an event: we have crossed it when we take a change we would never upstream. Cut it at an upstream
+sync boundary so history has a clean seam. At that point we also take ownership of the `Cargo.toml`
 version, since there is nothing left to merge.

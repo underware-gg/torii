@@ -10,8 +10,11 @@ env:
   REGISTRY_IMAGE: ghcr.io/${{ github.repository }}
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
+
+concurrency:
+  group: underware-release
+  cancel-in-progress: false
 
 jobs:
   prepare:
@@ -21,7 +24,7 @@ jobs:
       version: ${{ steps.release_info.outputs.version }}
       release_commit: ${{ steps.release_info.outputs.release_commit }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
@@ -32,15 +35,25 @@ jobs:
           version="${tag_name#uw-v}"
           release_commit="$(git rev-parse "${tag_name}^{commit}")"
 
-          if [ "$version" = "$tag_name" ] || [ -z "$version" ]; then
-            echo "Expected an Underware release tag, got $tag_name" >&2
+          if ! ./scripts/release.sh validate-version "$version"; then
+            echo "Expected a canonical Underware release semver tag, got $tag_name" >&2
+            exit 1
+          fi
+
+          if ! ./scripts/release.sh validate-version-order "$version"; then
+            echo "Underware release tag $tag_name is not newer than every published release" >&2
+            exit 1
+          fi
+
+          if [ "$(git cat-file -t "$tag_name")" != "tag" ]; then
+            echo "Underware release tag $tag_name must be annotated" >&2
             exit 1
           fi
 
           git fetch origin main:refs/remotes/origin/main
           main_commit="$(git rev-parse origin/main)"
-          if [ "$release_commit" != "$main_commit" ]; then
-            echo "Tag $tag_name must point at the current origin/main commit" >&2
+          if ! git merge-base --is-ancestor "$release_commit" "$main_commit"; then
+            echo "Tag $tag_name must point at a commit on origin/main" >&2
             exit 1
           fi
 
@@ -52,41 +65,44 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.prepare.outputs.tag_name }}
-          fetch-depth: 0
+          fetch-depth: 1
 
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           toolchain: "1.90.0"
 
-      - uses: arduino/setup-protoc@v2
+      - uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           version: "25.x"
 
-      - name: Build and verify version
+      - name: Build, verify, and archive Linux x86_64
         env:
           UNDERWARE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          cargo build --bin torii --release
-          version="$(target/release/torii --version)"
-          expected="torii ${UNDERWARE_VERSION}-uw (base torii "
-          case "$version" in
-            "$expected"*) ;;
-            *)
-              echo "Unexpected binary version: $version" >&2
-              exit 1
-              ;;
-          esac
+          target="x86_64-unknown-linux-gnu"
+          cargo build --bin torii --release --target "$target"
+          ./scripts/release.sh verify-binary "$UNDERWARE_VERSION" "target/$target/release/torii"
+          tar -czvf "torii_${{ needs.prepare.outputs.tag_name }}_linux_amd64.tar.gz" -C "target/$target/release" torii
+          mkdir -p linux/amd64
+          mv "target/$target/release/torii" linux/amd64
 
-          case "$version" in
-            *"base torii unknown"*|*", unknown)")
-              echo "Incomplete binary version: $version" >&2
-              exit 1
-              ;;
-          esac
+      - name: Upload docker binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: binaries-x86_64-unknown-linux-gnu
+          path: linux
+          retention-days: 14
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: artifacts-x86_64-unknown-linux-gnu
+          path: torii_${{ needs.prepare.outputs.tag_name }}_linux_amd64.tar.gz
+          retention-days: 14
 
   release:
     name: ${{ matrix.job.target }} (${{ matrix.job.os }})
@@ -104,10 +120,6 @@ jobs:
           # The target is used by Cargo
           # The arch is either 386, arm64 or amd64
           # The svm target platform to use for the binary https://github.com/roynalnaruto/svm-rs/blob/84cbe0ac705becabdc13168bae28a45ad2299749/svm-builds/build.rs#L4-L24
-          - os: ubuntu-latest-8-cores
-            platform: linux
-            target: x86_64-unknown-linux-gnu
-            arch: amd64
           - os: ubuntu-latest-8-cores-arm64
             platform: linux
             target: aarch64-unknown-linux-gnu
@@ -127,12 +139,12 @@ jobs:
             arch: amd64
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.prepare.outputs.tag_name }}
-          fetch-depth: 0
+          fetch-depth: 1
 
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         name: Rust Toolchain Setup
         with:
           toolchain: "1.90.0"
@@ -140,7 +152,7 @@ jobs:
           cache-on-failure: true
           cache-key: ${{ matrix.job.target }}
 
-      - uses: arduino/setup-protoc@v2
+      - uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           version: "25.x"
@@ -165,7 +177,7 @@ jobs:
       # Visual Studio bug tracker https://developercommunity.visualstudio.com/t/Regression-from-1943:-linkexe-crashes/10912960
       - name: Setup RUSTFLAGS (Windows)
         if: ${{ matrix.job.target == 'x86_64-pc-windows-msvc' }}
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             core.exportVariable('RUSTFLAGS', '-Csymbol-mangling-version=v0');
@@ -174,6 +186,17 @@ jobs:
         run: |
           cargo --version
           cargo build --bin torii --release --target ${{ matrix.job.target }}
+
+      - name: Verify binary version
+        env:
+          UNDERWARE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          binary="target/${TARGET}/release/torii"
+          if [ "$PLATFORM_NAME" = "win32" ]; then
+            binary="${binary}.exe"
+          fi
+          ./scripts/release.sh verify-binary "$UNDERWARE_VERSION" "$binary"
+        shell: bash
 
       - name: Archive binaries
         id: artifacts
@@ -206,14 +229,14 @@ jobs:
         shell: bash
 
       - name: Upload docker binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: binaries-${{ matrix.job.target }}
           path: ${{ env.PLATFORM_NAME }}
           retention-days: 14
 
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: artifacts-${{ matrix.job.target }}
           path: ${{ steps.artifacts.outputs.file_name }}
@@ -221,16 +244,14 @@ jobs:
 
   create-draft-release:
     runs-on: ubuntu-latest-4-cores
-    needs: [prepare, release]
+    needs: [prepare, verify-version, release]
+    permissions:
+      contents: write
     env:
       GITHUB_USER: ${{ github.repository_owner }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.tag_name }}
-          fetch-depth: 0
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: artifacts-*
           path: artifacts
@@ -241,38 +262,41 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
-    needs: [prepare, release, create-draft-release]
+    needs: [prepare, verify-version, release, create-draft-release]
     environment:
       name: underware-release
+    permissions:
+      contents: write
+      packages: write
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.prepare.outputs.tag_name }}
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Download binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: binaries-*
           path: artifacts/linux
           merge-multiple: true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v1
+        uses: docker/setup-buildx-action@f211e3e9ded2d9377c8cadc4489a4e38014bc4c9 # v1
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v1
+        uses: docker/login-action@dd4fa0671be5250ee6f50aedf4cb05514abda2c7 # v1
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push docker image
-        uses: docker/build-push-action@v3
+        uses: docker/build-push-action@1104d471370f9806843c095c1db02b5a90c5f8b6 # v3
         with:
           push: true
           tags: ghcr.io/${{ github.repository }}:latest,ghcr.io/${{ github.repository }}:${{ needs.prepare.outputs.tag_name }}

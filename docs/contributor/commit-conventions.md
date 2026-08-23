@@ -12,9 +12,8 @@ Conventional commits, matching upstream's style: `fix(indexer):`, `refactor(proc
 - **No notes-only commits.** An earlier workflow recorded promotion-target SHAs in separate
   notes commits; the result was history that had to be stripped out again. Working notes stay
   untracked.
-- Before pushing, confirm `git status --porcelain` is clean **and**
-  `git ls-files --others --exclude-standard` is empty. A clean status alone does not prove a path
-  is untracked.
+- Before pushing, confirm `git status --porcelain` is clean. It reports tracked, untracked, and
+  staged changes (except intentionally ignored files).
 
 ## Never committed
 

@@ -15,8 +15,8 @@ a deliberate decision first. Where practical, fixes are also offered upstream.
 
 ## The essentials
 
-- Branch from `main` onto a `dev/<name>` branch. Note that **`origin` is upstream, not this fork** —
-  see [Branching](./docs/contributor/branching.md).
+- Branch from `main` onto a `dev/<name>` branch. **`origin` is this Underware fork and `upstream`
+  is canonical Torii** — see [Branching](./docs/contributor/branching.md).
 - Conventional commits, matching upstream style. No notes-only commits — see
   [Commit conventions](./docs/contributor/commit-conventions.md).
 - Do not edit the workspace `version` in `Cargo.toml` — see

@@ -1,0 +1,25 @@
+name: Release policy
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  release-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check release tooling
+        run: |
+          bash -n scripts/release.sh
+          if ./scripts/release.sh validate-version 01.2.3 >release-check.out 2>&1; then
+            echo "release helper accepted a non-canonical version" >&2
+            exit 1
+          fi
+          grep -Fx 'error: version must be release semver (for example: 0.4.0)' release-check.out
+          ruby -e 'require "yaml"; YAML.load_file(".github/workflows/release.yml")'
