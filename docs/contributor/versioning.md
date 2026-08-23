@@ -33,8 +33,13 @@ User-Agent, and snapshot compatibility checks. Without a reachable fork tag, the
 At a release boundary, promote the validated `dev/*` branch to `main`, then create and publish an
 annotated `uw-v<version>` tag on that exact `main` commit. Pushing the tag starts the Underware
 release workflow, which verifies that the tagged commit is the current `origin/main` tip before
-bundling it. The tag is the source of the Underware version; never hand-edit it into `Cargo.toml`
-or source code. A release build does not fetch or inspect official Torii.
+bundling it and creating a draft GitHub release. Publication requires approval through the protected
+`underware-release` GitHub Environment; only then are the Docker image and the draft release
+published. The tag is the source of the Underware version; never hand-edit it into `Cargo.toml` or
+source code. A release build does not fetch or inspect official Torii.
+
+Configure `underware-release` in the repository settings with required reviewers before the first
+release. Without that protection, GitHub does not pause the publish job.
 
 ## Why not encode both in one version string
 
