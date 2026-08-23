@@ -30,16 +30,28 @@ User-Agent, and snapshot compatibility checks. Without a reachable fork tag, the
 
 ## Releasing
 
-At a release boundary, promote the validated `dev/*` branch to `main`, then create and publish an
-annotated `uw-v<version>` tag on that exact `main` commit. Pushing the tag starts the Underware
-release workflow, which verifies that the tagged commit is the current `origin/main` tip before
-bundling it and creating a draft GitHub release. Publication requires approval through the protected
+Promote the validated `dev/*` branch to `main` through the normal reviewed workflow. Release is a
+separate action from that promotion: check out the published local `main`, then run:
+
+```bash
+./scripts/release.sh check 0.4.0
+./scripts/release.sh candidate 0.4.0
+```
+
+`check` is read-only apart from refreshing the local `origin/main` reference. It requires a clean
+working tree, local `main` at exactly `origin/main`, and no remote `uw-v<version>` tag. `candidate`
+then creates or validates an annotated tag at that commit, verifies the release binary locally, and
+pushes **only the tag**. It never pushes a branch.
+
+Pushing the tag starts the Underware release workflow, which verifies the tagged `origin/main` tip,
+bundles it, and creates a draft GitHub release. Publication requires approval through the protected
 `underware-release` GitHub Environment; only then are the Docker image and the draft release
 published. The tag is the source of the Underware version; never hand-edit it into `Cargo.toml` or
 source code. A release build does not fetch or inspect official Torii.
 
-Configure `underware-release` in the repository settings with required reviewers before the first
-release. Without that protection, GitHub does not pause the publish job.
+Before the first release, configure repository protections: require reviews for `main`, protect
+`uw-v*` tags against update and deletion, and configure `underware-release` with required reviewers.
+Without the environment protection, GitHub does not pause the publish job.
 
 ## Why not encode both in one version string
 
