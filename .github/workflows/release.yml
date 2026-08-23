@@ -120,16 +120,16 @@ jobs:
           # The target is used by Cargo
           # The arch is either 386, arm64 or amd64
           # The svm target platform to use for the binary https://github.com/roynalnaruto/svm-rs/blob/84cbe0ac705becabdc13168bae28a45ad2299749/svm-builds/build.rs#L4-L24
-          - os: ubuntu-latest-8-cores-arm64
+          - os: ubuntu-24.04-arm
             platform: linux
             target: aarch64-unknown-linux-gnu
             arch: arm64
             svm_target_platform: linux-aarch64
-          - os: macos-latest-large
+          - os: macos-15-intel
             platform: darwin
             target: x86_64-apple-darwin
             arch: amd64
-          - os: macos-latest-xlarge
+          - os: macos-latest
             platform: darwin
             target: aarch64-apple-darwin
             arch: arm64
@@ -243,7 +243,7 @@ jobs:
           retention-days: 14
 
   create-draft-release:
-    runs-on: ubuntu-latest-4-cores
+    runs-on: ubuntu-latest
     needs: [prepare, verify-version, release]
     permissions:
       contents: write

@@ -38,7 +38,7 @@ jobs:
 
   clippy:
     needs: [fmt]
-    runs-on: ubuntu-latest-4-cores
+    runs-on: ubuntu-latest
     container:
       image: ghcr.io/dojoengine/torii-dev:latest
     steps:
@@ -48,7 +48,7 @@ jobs:
 
   test:
     needs: [fmt, clippy]
-    runs-on: ubuntu-latest-32-cores
+    runs-on: ubuntu-latest
     container:
       image: ghcr.io/dojoengine/torii-dev:latest
     steps:
