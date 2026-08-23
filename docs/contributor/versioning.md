@@ -49,8 +49,9 @@ apart from refreshing the local `origin/main` reference. It requires a clean wor
 validates a canonical annotated tag at that commit, verifies the release binary locally, and pushes
 **only the tag**. It never pushes a branch.
 
-Only one release workflow runs at a time. This preserves the order of publication and ensures the
-`latest` container tag always represents the last approved Underware release.
+Release workflows use GitHub Actions' multi-run FIFO queue and run one at a time. Pending releases
+are retained rather than replaced, preserving publication order and ensuring the `latest` container
+tag always represents the last approved Underware release.
 
 Pushing the tag starts the Underware release workflow, which verifies that the tagged commit remains
 on `origin/main`, bundles it, and creates a draft GitHub release. Publication requires approval through the protected

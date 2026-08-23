@@ -111,7 +111,7 @@ require_newer_than_published_release() {
 
 require_release_settings() {
     local origin_url repository reviewers self_review admin_bypass main_reviews main_checks main_admins force_pushes deletions
-    local tag_ruleset tag_rules tag_bypasses
+    local tag_ruleset tag_scope tag_rules tag_bypasses
 
     command -v gh >/dev/null || fail "GitHub CLI (gh) is required to verify release settings"
     origin_url="$(git remote get-url origin)" || fail "could not read the origin remote"
@@ -173,6 +173,12 @@ require_release_settings() {
         --jq '.[] | select(.name == "Underware release tags" and .target == "tag" and .enforcement == "active") | .id')" || \
         fail "could not read repository rulesets"
     [[ -n "$tag_ruleset" ]] || fail "active Underware release tag ruleset is missing"
+
+    tag_scope="$(gh api "repos/$repository/rulesets/$tag_ruleset" \
+        --jq '((.conditions.ref_name.include // []) | index("refs/tags/uw-v*") != null) and ((.conditions.ref_name.exclude // []) | length == 0)')" || \
+        fail "could not read Underware release tag ruleset conditions"
+    [[ "$tag_scope" == "true" ]] || \
+        fail "Underware release tag ruleset must include refs/tags/uw-v* with no exclusions"
 
     tag_rules="$(gh api "repos/$repository/rulesets/$tag_ruleset" --jq '[.rules[].type] | sort | join(",")')" || \
         fail "could not read the Underware release tag ruleset"
