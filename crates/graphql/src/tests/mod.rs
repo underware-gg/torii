@@ -361,13 +361,13 @@ pub async fn spinup_types_test(
         panic!("Failed to get records address")
     };
 
-    world
+    let InvokeTransactionResult { transaction_hash } = world
         .grant_writer(&compute_bytearray_hash("types_test"), &records_address)
         .send_with_cfg(&TxnConfig::init_wait())
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    TransactionWaiter::new(transaction_hash, &provider).await?;
 
     let InvokeTransactionResult { transaction_hash } = account
         .execute_v3(vec![Call {

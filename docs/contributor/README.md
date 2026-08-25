@@ -10,4 +10,4 @@ versioned, and how to run the tests.
 | [Branching](./branching.md) | Remote conventions, the `dev/*` → `main` model, syncing upstream |
 | [Versioning](./versioning.md) | The `uw-v` scheme, inherited Torii base, and what not to edit |
 | [Commit conventions](./commit-conventions.md) | Message format, history discipline, what is never committed |
-| [Testing](./testing.md) | Running the suites, and the fixtures they require |
+| [Testing](./testing.md) | CI policy checks, local hooks, test suites, and required fixtures |

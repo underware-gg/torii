@@ -1,5 +1,34 @@
 # Testing
 
+## CI policy checks
+
+The repository keeps semantic review with the approving developer. CI does not use agent API keys,
+OAuth tokens, or an automated reviewer. The required `release-policy` job instead runs deterministic
+checks for the first-party shell and GitHub Actions files that control CI and releases.
+
+Install the local prerequisites once on macOS:
+
+```sh
+brew install actionlint shellcheck
+bin/setup-githooks
+```
+
+CI pins actionlint 1.7.12 and ShellCheck 0.11.0. Compatible local versions can run the same check:
+
+```sh
+./scripts/check_ci_policy.sh
+```
+
+Shell checks cover `.githooks/`, `bin/setup-githooks`, and `scripts/*.sh` at warning-or-higher
+severity. actionlint checks every active workflow. Its configuration contains one narrow temporary
+exception for `release.yml`: GitHub supports `concurrency.queue: max`, but actionlint 1.7.12 does
+not parse the key yet. Remove the exception when the pinned stable actionlint release supports it.
+
+The pre-commit hook runs this policy check when a relevant staged path changes. It validates the
+working-tree files, so restage any file the check causes you to fix. A reviewer must not approve a
+pull request while any triggered check is failing; `release-policy` remains the sole mechanically
+required status check.
+
 ## The fixture requirement
 
 Most of the `torii-indexer` suite needs test databases extracted to `/tmp` first. Without them

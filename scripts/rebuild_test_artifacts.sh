@@ -11,7 +11,6 @@ katana_path="katana"
 # Global variables
 KATANA_PID=""
 KATANA_PORT=5050
-KATANA_HOST="0.0.0.0"
 
 # Function to show usage
 show_usage() {

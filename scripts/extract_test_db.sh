@@ -1,3 +1,7 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
 # Ensures that the user has locally the db dir in /tmp.
 
 rm -rf /tmp/spawn-and-move-db

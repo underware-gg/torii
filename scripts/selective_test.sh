@@ -67,8 +67,10 @@ get_crate_for_file() {
     if [[ "$file_path" == crates/* ]]; then
         # Extract crate name from path like crates/sqlite/sqlite/src/lib.rs -> sqlite
         # or crates/graphql/src/lib.rs -> graphql
-        local crate_path=$(echo "$file_path" | cut -d'/' -f2-)
-        local crate_name=$(echo "$crate_path" | cut -d'/' -f1)
+        local crate_path
+        local crate_name
+        crate_path="${file_path#crates/}"
+        crate_name="${crate_path%%/*}"
 
         # Handle nested crates like sqlite/sqlite -> sqlite
         if [[ -d "crates/$crate_name/$crate_name" ]]; then

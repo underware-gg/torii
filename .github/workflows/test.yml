@@ -12,6 +12,11 @@ on:
       - "xtask/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/test.yml"
+      - "scripts/clippy.sh"
+      - "scripts/extract_test_db.sh"
+      - "scripts/rust_fmt.sh"
 
   pull_request:
     paths:
@@ -21,6 +26,18 @@ on:
       - "xtask/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/test.yml"
+      - "scripts/clippy.sh"
+      - "scripts/extract_test_db.sh"
+      - "scripts/rust_fmt.sh"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -32,8 +49,8 @@ jobs:
     container:
       image: ghcr.io/dojoengine/torii-dev:latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
       - run: scripts/rust_fmt.sh
 
   clippy:
@@ -42,8 +59,8 @@ jobs:
     container:
       image: ghcr.io/dojoengine/torii-dev:latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
       - run: ./scripts/clippy.sh
 
   test:
@@ -52,10 +69,10 @@ jobs:
     container:
       image: ghcr.io/dojoengine/torii-dev:latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
 
-      - uses: software-mansion/setup-scarb@v1
+      - uses: software-mansion/setup-scarb@2a96b748888e3329ee44ac9ac073d930e692b3cd # v1
         with:
           scarb-version: "2.12.2"
 
