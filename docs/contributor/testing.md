@@ -2,9 +2,10 @@
 
 ## CI policy checks
 
-The repository keeps semantic review with the approving developer. CI does not use agent API keys,
-OAuth tokens, or an automated reviewer. The required `release-policy` job instead runs deterministic
-checks for the first-party shell and GitHub Actions files that control CI and releases.
+The repository keeps semantic review with the developer responsible for merging. CI does not use
+agent API keys, OAuth tokens, or an automated reviewer. The required `release-policy` job instead
+runs deterministic checks for the first-party shell and GitHub Actions files that control CI and
+releases.
 
 Install the local prerequisites once on macOS:
 
@@ -25,9 +26,16 @@ exception for `release.yml`: GitHub supports `concurrency.queue: max`, but actio
 not parse the key yet. Remove the exception when the pinned stable actionlint release supports it.
 
 The pre-commit hook runs this policy check when a relevant staged path changes. It validates the
-working-tree files, so restage any file the check causes you to fix. A reviewer must not approve a
-pull request while any triggered check is failing; `release-policy` remains the sole mechanically
-required status check.
+working-tree files, so restage any file the check causes you to fix. A reviewer must not approve,
+and a maintainer must not bypass the review requirement, while any triggered check is failing;
+`release-policy` remains the sole mechanically required status check.
+
+`main` has two protection layers. The base branch protection requires a pull request, resolved
+review conversations, and a passing `release-policy` check for everyone, including administrators.
+An additional review-only ruleset requires one approval but gives the `underware-gg/admin` team a
+**For pull requests only** bypass. Admins may use that recorded bypass for their own maintainer PRs
+or exceptional cases; it never permits a direct push or skips the base protections. Other
+contributors require one approving review from a collaborator with write access.
 
 ## The fixture requirement
 

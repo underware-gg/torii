@@ -25,6 +25,11 @@ branch, resolve and test the result, then merge it to `main` through the normal 
 request. `main` is protected, never force-pushed, and keeps both the upstream and Underware
 history needed to understand a release.
 
+Every change to `main` uses a pull request and must pass the required checks. Pull requests normally
+require one approval. Members of `underware-gg/admin` may instead use GitHub's recorded
+pull-request-only bypass for their own maintainer PRs or exceptional cases; the bypass does not
+permit direct pushes or skip CI. Other contributors always require an approving review.
+
 This is development synchronization only. Once a commit is on `main`, an Underware release builds
 that local source and its `uw-v*` tag; it does not fetch or inspect `upstream`.
 

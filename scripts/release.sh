@@ -110,7 +110,9 @@ require_newer_than_published_release() {
 }
 
 require_release_settings() {
-    local origin_url repository reviewers self_review admin_bypass main_reviews main_checks main_admins force_pushes deletions
+    local origin_url repository reviewers self_review admin_bypass
+    local main_reviews main_checks main_admins force_pushes deletions conversations
+    local review_ruleset review_scope review_rule admin_team_id review_bypasses
     local tag_ruleset tag_scope tag_rules tag_bypasses
 
     command -v gh >/dev/null || fail "GitHub CLI (gh) is required to verify release settings"
@@ -151,8 +153,8 @@ require_release_settings() {
     main_reviews="$(gh api "repos/$repository/branches/main/protection" \
         --jq '.required_pull_request_reviews.required_approving_review_count')" || \
         fail "could not read main branch protection"
-    [[ "$main_reviews" =~ ^[1-9][0-9]*$ ]] || \
-        fail "main must require at least one approving review"
+    [[ "$main_reviews" == "0" ]] || \
+        fail "main branch protection must require pull requests without a universal approval gate"
 
     main_checks="$(gh api "repos/$repository/branches/main/protection" \
         --jq '[.required_status_checks.contexts[]?] | index("release-policy") | not | not')" || \
@@ -166,8 +168,44 @@ require_release_settings() {
         fail "could not read main force-push protection"
     deletions="$(gh api "repos/$repository/branches/main/protection" --jq '.allow_deletions.enabled')" || \
         fail "could not read main deletion protection"
-    [[ "$main_admins" == "true" && "$force_pushes" == "false" && "$deletions" == "false" ]] || \
-        fail "main protection must apply to administrators and block force-pushes and deletion"
+    conversations="$(gh api "repos/$repository/branches/main/protection" \
+        --jq '.required_conversation_resolution.enabled')" || \
+        fail "could not read main conversation-resolution protection"
+    [[ "$main_admins" == "true" && "$force_pushes" == "false" && "$deletions" == "false" && "$conversations" == "true" ]] || \
+        fail "main protection must apply to administrators, resolve conversations, and block force-pushes and deletion"
+
+    review_ruleset="$(gh api "repos/$repository/rulesets" \
+        --jq '[.[] | select(.name == "Underware main reviews" and .target == "branch" and .enforcement == "active")] | if length == 1 then .[0].id else empty end')" || \
+        fail "could not read repository rulesets"
+    [[ -n "$review_ruleset" ]] || fail "active Underware main reviews ruleset is missing or duplicated"
+
+    review_scope="$(gh api "repos/$repository/rulesets/$review_ruleset" \
+        --jq '(.conditions.ref_name.include == ["refs/heads/main"]) and ((.conditions.ref_name.exclude // []) | length == 0)')" || \
+        fail "could not read Underware main reviews ruleset conditions"
+    [[ "$review_scope" == "true" ]] || \
+        fail "Underware main reviews ruleset must apply only to refs/heads/main"
+
+    review_rule="$(gh api "repos/$repository/rulesets/$review_ruleset" --jq '
+        (.rules | length == 1) and
+        (.rules[0].type == "pull_request") and
+        (.rules[0].parameters.required_approving_review_count == 1) and
+        (.rules[0].parameters.dismiss_stale_reviews_on_push == true) and
+        (.rules[0].parameters.require_code_owner_review == false) and
+        (.rules[0].parameters.require_last_push_approval == false) and
+        (.rules[0].parameters.required_review_thread_resolution == false)')" || \
+        fail "could not read Underware main review requirements"
+    [[ "$review_rule" == "true" ]] || \
+        fail "Underware main reviews ruleset must contain only the one-approval review rule"
+
+    admin_team_id="$(gh api "repos/$repository/teams" \
+        --jq '[.[] | select(.slug == "admin" and .permission == "admin")] | if length == 1 then .[0].id else empty end')" || \
+        fail "could not read repository teams"
+    [[ -n "$admin_team_id" ]] || fail "repository must have exactly one admin team with admin permission"
+    review_bypasses="$(gh api "repos/$repository/rulesets/$review_ruleset" \
+        --jq '[.bypass_actors[] | "\(.actor_type):\(.actor_id):\(.bypass_mode)"] | sort | join(",")')" || \
+        fail "could not read Underware main review bypasses"
+    [[ "$review_bypasses" == "Team:$admin_team_id:pull_request" ]] || \
+        fail "Underware main reviews must allow only the admin team to bypass from a pull request"
 
     tag_ruleset="$(gh api "repos/$repository/rulesets" \
         --jq '.[] | select(.name == "Underware release tags" and .target == "tag" and .enforcement == "active") | .id')" || \

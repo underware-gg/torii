@@ -41,13 +41,14 @@ separate action from that promotion: check out the published local `main`, then 
 ./scripts/release.sh candidate 0.4.0
 ```
 
-`verify-settings` confirms that GitHub has a peer approval environment (no self-review or admin
-bypass), a reviewed non-force-pushable `main` with the required `release-policy` check, and
-immutable release tags. `check` performs the same safeguard check, and is otherwise read-only
-apart from refreshing the local `origin/main` reference. It requires a clean working tree, local
-`main` at exactly `origin/main`, and no remote `uw-v<version>` tag. `candidate` then creates or
-validates a canonical annotated tag at that commit, verifies the release binary locally, and pushes
-**only the tag**. It never pushes a branch.
+`verify-settings` confirms that GitHub has a peer-approved release environment with no bypass, a
+non-force-pushable `main` with mandatory pull requests and the required `release-policy` check, a
+one-approval review ruleset with a pull-request-only bypass for the `underware-gg/admin` team, and
+immutable release tags. `check` performs the same safeguard check, and is otherwise read-only apart
+from refreshing the local `origin/main` reference. It requires a clean working tree, local `main` at
+exactly `origin/main`, and no remote `uw-v<version>` tag. `candidate` then creates or validates a
+canonical annotated tag at that commit, verifies the release binary locally, and pushes **only the
+tag**. It never pushes a branch.
 
 Release workflows use GitHub Actions' multi-run FIFO queue and run one at a time. Pending releases
 are retained rather than replaced, preserving publication order and ensuring the `latest` container
@@ -59,10 +60,10 @@ on `origin/main`, bundles it, and creates a draft GitHub release. Publication re
 published. The tag is the source of the Underware version; never hand-edit it into `Cargo.toml` or
 source code. A release build does not fetch or inspect official Torii.
 
-Before the first release, configure repository protections: require reviews for `main`, protect
-`uw-v*` tags against update and deletion, and configure `underware-release` with required reviewers.
-`verify-settings` makes these external requirements observable; without the environment protection,
-GitHub does not pause the publish job.
+Before the first release, configure the base `main` protection and its separate review-only ruleset,
+protect `uw-v*` tags against update and deletion, and configure `underware-release` with required
+reviewers. `verify-settings` makes these external requirements observable; without the environment
+protection, GitHub does not pause the publish job.
 
 ## Why not encode both in one version string
 
