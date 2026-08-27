@@ -52,21 +52,29 @@ from refreshing the local `origin/main` reference. It requires a clean working t
 exactly `origin/main`, and no remote `uw-v<version>` tag. `candidate` then dispatches the protected
 release workflow for that version and exact commit. It does not create or push a tag.
 
-Release workflows use GitHub Actions' multi-run FIFO queue and run one at a time. Pending candidates
-are retained rather than replaced. Each candidate runs the full test suite, builds and verifies all
-release platforms, stores the resulting artifacts, and verifies the multi-platform container build
-before publication can be approved.
+Only one release candidate may be outstanding at a time. `candidate` refuses to dispatch while
+another release run is active, and the workflow rejects a run if an earlier-dispatched candidate is
+still active. GitHub Actions' multi-run queue is retained as a serialization backstop rather than as
+an ordering guarantee. Each candidate runs the full test suite, builds and verifies all release
+platforms, stores the resulting artifacts, and builds the multi-platform container before
+publication can be approved.
 
+The container build is staged in GHCR without a tag and identified by its immutable digest.
 Publication requires approval through the protected `underware-release` GitHub Environment. Only
 after the builds pass and approval is granted does the workflow create the canonical annotated tag
-at the tested commit, create or update the draft GitHub release from those exact artifacts, publish
-the Docker image, and publish the release. The publication steps are idempotent: if an external
-service fails after tag creation, rerun the same job with the same version rather than changing the
-immutable tag. A failure before publication approval creates no tag and consumes no version.
+at the tested commit, create or update the draft GitHub release from those exact artifacts, attach
+the stable version tag to the staged container digest, and publish the release. The same digest is
+also promoted to `latest` only while it remains at least as high as every published Underware
+release.
+
+The publication steps are safe to rerun: if an external service fails after tag creation, rerun the
+same job with the same version rather than changing the immutable tag. An older rerun can complete
+its versioned image and release without moving `latest` backwards. A failure before publication
+approval creates no Git tag or user-visible release and consumes no version.
 
 The final tag records the Underware version; never hand-edit it into `Cargo.toml` or source code. A
-release build does not fetch or inspect official Torii. Publication order ensures the `latest`
-container tag always represents the last approved Underware release.
+release build does not fetch or inspect official Torii. The publish-time release-order check keeps
+an older rerun from moving the `latest` container tag backwards.
 
 Before the first release, configure the base `main` protection and its separate review-only ruleset,
 protect `uw-v*` tags against update and deletion, and configure `underware-release` with required

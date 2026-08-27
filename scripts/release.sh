@@ -9,6 +9,8 @@ Usage:
   ./scripts/release.sh candidate <version>
   ./scripts/release.sh validate-version <version>
   ./scripts/release.sh validate-candidate <version>
+  ./scripts/release.sh validate-queue [<run-id> <run-number>]
+  ./scripts/release.sh is-highest-published-version <version>
   ./scripts/release.sh validate-version-order <version>
   ./scripts/release.sh verify-binary <version> <binary>
   ./scripts/release.sh verify-settings
@@ -20,6 +22,10 @@ Commands:
              Verify that a version is canonical Underware release semver.
   validate-candidate
              Verify that a version is canonical, newer, and unused on origin.
+  validate-queue
+             Verify that no earlier release candidate is still active.
+  is-highest-published-version
+             Print whether a version is at least as high as every published release.
   validate-version-order
              Verify that a version is not older than any published Underware release.
   verify-binary
@@ -103,25 +109,82 @@ github_repository() {
 }
 
 require_newer_than_published_release() {
-    local version="$1" remote_tags tag tag_version
+    local version="$1" is_highest
+
+    is_highest="$(release_tag_version_is_highest "$version")"
+    [[ "$is_highest" == "true" ]] || \
+        fail "version $version must not be older than an existing Underware release"
+}
+
+version_is_highest_among() {
+    local version="$1" versions="$2" other_version
     local candidate_major candidate_minor candidate_patch published_major published_minor published_patch
+    local is_highest="true"
+
+    IFS=. read -r candidate_major candidate_minor candidate_patch <<<"$version"
+    while IFS= read -r other_version; do
+        [[ -n "$other_version" ]] || continue
+        require_release_version "$other_version"
+
+        IFS=. read -r published_major published_minor published_patch <<<"$other_version"
+        if ((10#$candidate_major < 10#$published_major ||
+            (10#$candidate_major == 10#$published_major && 10#$candidate_minor < 10#$published_minor) ||
+            (10#$candidate_major == 10#$published_major && 10#$candidate_minor == 10#$published_minor && 10#$candidate_patch < 10#$published_patch))); then
+            is_highest="false"
+        fi
+    done <<<"$versions"
+
+    printf '%s\n' "$is_highest"
+}
+
+release_tag_version_is_highest() {
+    local version="$1" remote_tags tag versions=""
 
     remote_tags="$(git ls-remote --refs --tags origin 'refs/tags/uw-v*')" || \
         fail "could not query origin release tags"
     while IFS=$'\t' read -r _ tag; do
         [[ -n "$tag" ]] || continue
-        tag="${tag#refs/tags/uw-v}"
-        tag_version="$tag"
-        require_release_version "$tag_version"
-
-        IFS=. read -r candidate_major candidate_minor candidate_patch <<<"$version"
-        IFS=. read -r published_major published_minor published_patch <<<"$tag_version"
-        if ((10#$candidate_major < 10#$published_major ||
-            (10#$candidate_major == 10#$published_major && 10#$candidate_minor < 10#$published_minor) ||
-            (10#$candidate_major == 10#$published_major && 10#$candidate_minor == 10#$published_minor && 10#$candidate_patch < 10#$published_patch))); then
-            fail "version $version must be newer than published Underware release $tag_version"
-        fi
+        versions+="${tag#refs/tags/uw-v}"$'\n'
     done <<<"$remote_tags"
+
+    version_is_highest_among "$version" "$versions"
+}
+
+published_release_version_is_highest() {
+    local version="$1" repository published_tags tag versions=""
+
+    command -v gh >/dev/null || fail "GitHub CLI (gh) is required to read published releases"
+    repository="$(github_repository)"
+    published_tags="$(gh api --paginate "repos/$repository/releases?per_page=100" \
+        --jq '.[] | select(.draft == false and .prerelease == false and (.tag_name | startswith("uw-v"))) | .tag_name')" || \
+        fail "could not read published Underware releases"
+    while IFS= read -r tag; do
+        [[ -n "$tag" ]] || continue
+        versions+="${tag#uw-v}"$'\n'
+    done <<<"$published_tags"
+
+    version_is_highest_among "$version" "$versions"
+}
+
+require_release_queue_head() {
+    local current_run_id="${1:-}" current_run_number="${2:-}"
+    local repository active_runs filter
+
+    command -v gh >/dev/null || fail "GitHub CLI (gh) is required to verify the release queue"
+    repository="$(github_repository)"
+
+    if [[ -z "$current_run_id" && -z "$current_run_number" ]]; then
+        filter='[.workflow_runs[] | select(.status != "completed")] | length'
+    else
+        [[ "$current_run_id" =~ ^[0-9]+$ && "$current_run_number" =~ ^[0-9]+$ ]] || \
+            fail "release run id and number must be numeric"
+        filter="[.workflow_runs[] | select(.status != \"completed\" and .id != $current_run_id and .run_number < $current_run_number)] | length"
+    fi
+
+    active_runs="$(gh api "repos/$repository/actions/workflows/release.yml/runs?per_page=100" \
+        --jq "$filter")" || fail "could not read the Underware release queue"
+    [[ "$active_runs" == "0" ]] || \
+        fail "an earlier Underware release candidate is still active; wait for it to complete"
 }
 
 require_release_settings() {
@@ -267,6 +330,7 @@ candidate() {
     local repository
 
     check "$version"
+    require_release_queue_head
     repository="$(github_repository)"
     gh workflow run release.yml --repo "$repository" --ref main \
         -f "version=$version" -f "commit=$(git rev-parse HEAD)"
@@ -298,6 +362,21 @@ case "$1" in
     validate-candidate)
         [[ $# -eq 2 ]] || { usage; exit 2; }
         require_release_candidate "$2"
+        ;;
+    validate-queue)
+        if [[ $# -eq 1 ]]; then
+            require_release_queue_head
+        elif [[ $# -eq 3 ]]; then
+            require_release_queue_head "$2" "$3"
+        else
+            usage
+            exit 2
+        fi
+        ;;
+    is-highest-published-version)
+        [[ $# -eq 2 ]] || { usage; exit 2; }
+        require_release_version "$2"
+        published_release_version_is_highest "$2"
         ;;
     validate-version-order)
         [[ $# -eq 2 ]] || { usage; exit 2; }

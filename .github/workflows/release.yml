@@ -18,6 +18,7 @@ env:
   REGISTRY_IMAGE: ghcr.io/${{ github.repository }}
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -40,6 +41,7 @@ jobs:
         id: release_info
         env:
           CANDIDATE_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
           REQUESTED_COMMIT: ${{ inputs.commit }}
         run: |
           if [ "$GITHUB_REF" != "refs/heads/main" ]; then
@@ -58,6 +60,8 @@ jobs:
             echo "Dispatched main commit $release_commit does not match requested commit $REQUESTED_COMMIT" >&2
             exit 1
           fi
+
+          ./scripts/release.sh validate-queue "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER"
 
           if ! ./scripts/release.sh validate-candidate "$version"; then
             echo "Underware release candidate $tag_name is invalid or already used" >&2
@@ -266,8 +270,11 @@ jobs:
   verify-container:
     runs-on: ubuntu-latest
     needs: [prepare, verify-version, release]
+    outputs:
+      container_digest: ${{ steps.container.outputs.digest }}
     permissions:
       contents: read
+      packages: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -285,13 +292,21 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f211e3e9ded2d9377c8cadc4489a4e38014bc4c9 # v1
 
-      - name: Verify multi-platform container build
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@dd4fa0671be5250ee6f50aedf4cb05514abda2c7 # v1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and stage multi-platform container by digest
+        id: container
         uses: docker/build-push-action@1104d471370f9806843c095c1db02b5a90c5f8b6 # v3
         with:
-          push: false
           platforms: linux/amd64,linux/arm64
           build-contexts: |
             artifacts=artifacts
+          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
 
   publish:
     runs-on: ubuntu-latest
@@ -310,13 +325,6 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.release_commit }}
           fetch-depth: 0
-
-      - name: Download binaries
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: binaries-*
-          path: artifacts/linux
-          merge-multiple: true
 
       - name: Download release artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -365,27 +373,59 @@ jobs:
           fi
 
       - name: Create or update draft release
+        id: release_state
         env:
           RELEASE_COMMIT: ${{ needs.prepare.outputs.release_commit }}
           TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
         run: |
-          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release upload "$TAG_NAME" release-artifacts/* --clobber
+          if is_draft="$(gh release view "$TAG_NAME" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            if [ "$is_draft" = "true" ]; then
+              gh release upload "$TAG_NAME" release-artifacts/* --clobber
+              echo "is_draft=true" >> "$GITHUB_OUTPUT"
+            elif [ "$is_draft" = "false" ]; then
+              echo "is_draft=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "Unexpected draft state for $TAG_NAME: $is_draft" >&2
+              exit 1
+            fi
           else
             gh release create "$TAG_NAME" release-artifacts/* \
               --draft --generate-notes --target "$RELEASE_COMMIT" --verify-tag
+            echo "is_draft=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build and push docker image
-        uses: docker/build-push-action@1104d471370f9806843c095c1db02b5a90c5f8b6 # v3
-        with:
-          push: true
-          tags: ghcr.io/${{ github.repository }}:latest,ghcr.io/${{ github.repository }}:${{ needs.prepare.outputs.tag_name }}
-          platforms: linux/amd64,linux/arm64
-          build-contexts: |
-            artifacts=artifacts
-
-      - name: Publish draft release
+      - name: Publish immutable container version
         env:
+          CONTAINER_DIGEST: ${{ needs.verify-container.outputs.container_digest }}
           TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
-        run: gh release edit "$TAG_NAME" --draft=false
+        run: |
+          set -euo pipefail
+          [[ "$CONTAINER_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "Invalid staged container digest: $CONTAINER_DIGEST" >&2
+            exit 1
+          }
+          docker buildx imagetools create \
+            --tag "$REGISTRY_IMAGE:$TAG_NAME" \
+            "$REGISTRY_IMAGE@$CONTAINER_DIGEST"
+
+      - name: Determine release order
+        id: release_order
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: echo "latest=$(./scripts/release.sh is-highest-published-version "$VERSION")" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        if: steps.release_state.outputs.is_draft == 'true'
+        env:
+          IS_LATEST: ${{ steps.release_order.outputs.latest }}
+          TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
+        run: gh release edit "$TAG_NAME" --draft=false --latest="$IS_LATEST"
+
+      - name: Publish latest container tag
+        if: steps.release_order.outputs.latest == 'true'
+        env:
+          CONTAINER_DIGEST: ${{ needs.verify-container.outputs.container_digest }}
+        run: |
+          docker buildx imagetools create \
+            --tag "$REGISTRY_IMAGE:latest" \
+            "$REGISTRY_IMAGE@$CONTAINER_DIGEST"
