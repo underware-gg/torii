@@ -21,6 +21,21 @@ const LOG_TARGET: &str = "torii::indexer::task_manager";
 pub type TaskId = u64;
 pub type TaskPriority = usize;
 
+pub fn task_id_from_address_and_key(from_address: Felt, key: Felt) -> TaskId {
+    task_id_from_address_and_keys(from_address, &[key])
+}
+
+pub fn task_id_from_address_and_keys(from_address: Felt, keys: &[Felt]) -> TaskId {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    from_address.hash(&mut hasher);
+    for key in keys {
+        key.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 #[derive(Debug, Clone)]
 pub struct ParallelizedEvent {
     pub indexing_mode: IndexingMode,
@@ -100,6 +115,19 @@ impl<P: Provider + Send + Sync + Clone + std::fmt::Debug + 'static> TaskManager<
                 IndexingMode::Historical => {
                     task_data.events.push(parallelized_event);
                 }
+            }
+
+            if let Err(e) = self
+                .task_network
+                .add_dependencies(task_identifier, dependencies.clone())
+            {
+                error!(
+                    target: LOG_TARGET,
+                    error = ?e,
+                    task_id = %task_identifier,
+                    dependencies = ?dependencies,
+                    "Failed to add dependencies to existing task."
+                );
             }
         } else {
             let task_data = match parallelized_event.indexing_mode {
@@ -267,5 +295,35 @@ impl<P: Provider + Send + Sync + Clone + std::fmt::Debug + 'static> TaskManager<
 
     pub fn clear_tasks(&mut self) {
         self.task_network.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_id_from_address_and_key_hashes_in_order() {
+        let from_address = Felt::from_hex("0x123").unwrap();
+        let key = Felt::from_hex("0x456").unwrap();
+
+        let forward = task_id_from_address_and_key(from_address, key);
+        let swapped = task_id_from_address_and_key(key, from_address);
+
+        assert_ne!(forward, swapped);
+    }
+
+    #[test]
+    fn task_id_from_address_and_keys_hashes_in_order() {
+        let from_address = Felt::from_hex("0x123").unwrap();
+        let keys = [
+            Felt::from_hex("0x456").unwrap(),
+            Felt::from_hex("0x789").unwrap(),
+        ];
+
+        let forward = task_id_from_address_and_keys(from_address, &keys);
+        let reversed = task_id_from_address_and_keys(from_address, &[keys[1], keys[0]]);
+
+        assert_ne!(forward, reversed);
     }
 }

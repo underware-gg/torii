@@ -1,5 +1,3 @@
-use std::hash::{DefaultHasher, Hash, Hasher};
-
 use async_trait::async_trait;
 use dojo_types::schema::Ty;
 use dojo_world::contracts::abigen::world::Event as WorldEvent;
@@ -7,11 +5,11 @@ use dojo_world::contracts::model::{ModelRPCReader, ModelReader};
 use dojo_world::contracts::WorldContractReader;
 use starknet::core::types::{BlockId, Event};
 use starknet::providers::Provider;
-use torii_cache::CacheError;
 use torii_proto::Model;
+use torii_storage::utils::hex_felt;
 use tracing::{debug, info};
 
-use crate::task_manager::TaskId;
+use crate::task_manager::{task_id_from_address_and_key, TaskId};
 use crate::EventProcessor;
 use crate::{EventProcessorContext, Result};
 
@@ -36,10 +34,7 @@ where
     }
 
     fn task_identifier(&self, event: &Event) -> TaskId {
-        let mut hasher = DefaultHasher::new();
-        event.from_address.hash(&mut hasher);
-        event.keys[1].hash(&mut hasher); // Use the event selector to create a unique ID
-        hasher.finish()
+        task_id_from_address_and_key(event.from_address, event.keys[1])
     }
 
     async fn process(&self, ctx: &EventProcessorContext<P>) -> Result<()> {
@@ -60,19 +55,8 @@ where
         // Called model here by language, but it's an event. Torii rework will make clear
         // distinction.
 
-        // If the model does not exist, silently ignore it.
-        // This can happen if only specific namespaces are indexed.
-        let model = match ctx.cache.model(ctx.contract_address, event.selector).await {
-            Ok(m) => m,
-            Err(CacheError::ModelNotFound(_)) if !ctx.config.namespaces.is_empty() => {
-                debug!(
-                    target: LOG_TARGET,
-                    selector = %event.selector,
-                    "Model not found in cache, skipping. This can happen if only specific namespaces are indexed."
-                );
-                return Ok(());
-            }
-            Err(e) => return Err(e.into()),
+        let Some(model) = ctx.resolve_model_or_skip(event.selector).await? else {
+            return Ok(());
         };
         let name = model.name;
         let namespace = model.namespace;
@@ -115,6 +99,8 @@ where
             target: LOG_TARGET,
             namespace = %namespace,
             name = %name,
+            contract_address = %hex_felt(&event.address.0),
+            class_hash = %hex_felt(&event.class_hash.0),
             "Upgraded event."
         );
 

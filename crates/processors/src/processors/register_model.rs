@@ -1,5 +1,3 @@
-use std::hash::{DefaultHasher, Hash, Hasher};
-
 use async_trait::async_trait;
 use cainome::cairo_serde::Error as CainomeError;
 use dojo_types::naming::compute_selector_from_names;
@@ -13,7 +11,7 @@ use torii_proto::Model;
 use tracing::{debug, info};
 
 use crate::error::Error;
-use crate::task_manager::TaskId;
+use crate::task_manager::{task_id_from_address_and_key, TaskId};
 use crate::{EventProcessor, EventProcessorContext};
 use metrics::counter;
 
@@ -55,10 +53,7 @@ where
             }
         };
 
-        let mut hasher = DefaultHasher::new();
-        event.from_address.hash(&mut hasher);
-        selector.hash(&mut hasher);
-        hasher.finish()
+        task_id_from_address_and_key(event.from_address, selector)
     }
 
     async fn process(&self, ctx: &EventProcessorContext<P>) -> Result<(), Error> {

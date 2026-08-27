@@ -26,3 +26,8 @@ examples/spawn-and-move/manifests/saya/**
 artifacts/
 
 crates/katana/explorer/ui
+
+# Local-only notes and agent overrides — never published
+.dev.local/
+/tmp/
+*.local.md

@@ -6,11 +6,11 @@ use dojo_world::contracts::abigen::world::Event as WorldEvent;
 use starknet::core::types::{Event, Felt};
 use starknet::providers::Provider;
 use starknet_crypto::poseidon_hash_many;
-use torii_cache::CacheError;
-use tracing::{debug, info};
+use torii_storage::utils::hex_felt;
+use tracing::{error, info};
 
 use crate::error::Error;
-use crate::task_manager::TaskId;
+use crate::task_manager::{task_id_from_address_and_key, TaskId};
 use crate::{EventProcessor, EventProcessorConfig, EventProcessorContext, IndexingMode};
 use metrics::counter;
 
@@ -47,11 +47,10 @@ where
     }
 
     fn task_dependencies(&self, event: &Event) -> Vec<TaskId> {
-        let mut hasher = DefaultHasher::new();
-        event.from_address.hash(&mut hasher);
-        // selector
-        event.keys[1].hash(&mut hasher);
-        vec![hasher.finish()]
+        vec![task_id_from_address_and_key(
+            event.from_address,
+            event.keys[1],
+        )]
     }
 
     fn indexing_mode(&self, event: &Event, config: &EventProcessorConfig) -> IndexingMode {
@@ -81,32 +80,37 @@ where
             }
         };
 
-        // silently ignore if the model is not found
-        let model = match ctx.cache.model(ctx.contract_address, event.selector).await {
-            Ok(model) => model,
-            Err(CacheError::ModelNotFound(_)) if !ctx.config.namespaces.is_empty() => {
-                debug!(
-                    target: LOG_TARGET,
-                    selector = %event.selector,
-                    "Model not found in cache, skipping. This can happen if only specific namespaces are indexed."
-                );
-                return Ok(());
-            }
-            Err(e) => return Err(e.into()),
+        let Some(model) = ctx.resolve_model_or_skip(event.selector).await? else {
+            return Ok(());
         };
 
         info!(
             target: LOG_TARGET,
             namespace = %model.namespace,
             name = %model.name,
-            system = %format!("{:#x}", Felt::from(event.system_address)),
+            system = %hex_felt(&Felt::from(event.system_address)),
             "Store event message."
         );
 
-        let mut keys_and_unpacked = [event.keys.clone(), event.values].concat();
+        let mut keys_and_unpacked = [event.keys.as_slice(), event.values.as_slice()].concat();
 
         let mut entity = model.schema.clone();
-        entity.deserialize(&mut keys_and_unpacked, model.use_legacy_store)?;
+        if let Err(e) = entity.deserialize(&mut keys_and_unpacked, model.use_legacy_store) {
+            error!(
+                target: LOG_TARGET,
+                namespace = %model.namespace,
+                name = %model.name,
+                selector = %hex_felt(&model.selector),
+                model_contract_address = %hex_felt(&model.contract_address),
+                class_hash = %hex_felt(&model.class_hash),
+                use_legacy_store = model.use_legacy_store,
+                raw_keys = ?event.keys,
+                raw_values = ?event.values,
+                error = ?e,
+                "Failed to deserialize event message."
+            );
+            return Err(e.into());
+        }
 
         ctx.storage
             .set_event_message(

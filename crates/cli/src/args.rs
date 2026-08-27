@@ -158,10 +158,16 @@ mod test {
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
 
+    use clap::CommandFactory;
     use torii_proto::{ContractDefinition, ContractType};
     use torii_sqlite_types::ModelIndices;
 
     use super::*;
+
+    #[test]
+    fn test_clap_definition_is_valid() {
+        ToriiArgs::command().debug_assert();
+    }
 
     #[test]
     fn test_cli_precedence() {

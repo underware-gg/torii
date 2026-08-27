@@ -1,19 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACMRT)
+has_staged_files=false
+run_ci_policy=false
+run_rust_checks=false
 
-if [[ -z "$STAGED_FILES" ]]; then
+while IFS= read -r -d '' file; do
+  has_staged_files=true
+
+  case "$file" in
+    .github/actionlint.yml|.github/workflows/*.yml|.github/workflows/*.yaml|.githooks/*|bin/setup-githooks|scripts/*.sh)
+      run_ci_policy=true
+      ;;
+  esac
+
+  case "$file" in
+    *.rs|Cargo.toml|Cargo.lock|rust-toolchain.toml|.clippy.toml|rustfmt.toml)
+      run_rust_checks=true
+      ;;
+  esac
+done < <(git diff --cached --name-only -z --diff-filter=ACMRTD)
+
+if [[ "$has_staged_files" == false ]]; then
   exit 0
 fi
 
-# Rust
-if echo "$STAGED_FILES" | grep -qE '\.rs$|^Cargo\.(toml|lock)$|^rust-toolchain\.toml$|^\.clippy\.toml$|^rustfmt\.toml$'; then
+if [[ "$run_ci_policy" == true ]]; then
+  echo 'Running CI policy checks...'
+  ./scripts/check_ci_policy.sh
+fi
+
+if [[ "$run_rust_checks" == true ]]; then
   echo 'Running Rust checks...'
   ./scripts/rust_fmt.sh --check
   ./scripts/clippy.sh
   cargo test --workspace --all-features
 fi
-
 
 echo 'Pre-commit checks complete.'

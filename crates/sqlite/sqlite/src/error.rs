@@ -79,3 +79,47 @@ pub enum QueryError {
     #[error("Invalid cursor: {0}")]
     InvalidCursor(String),
 }
+
+impl From<Error> for torii_storage::StorageError {
+    fn from(error: Error) -> Self {
+        match error {
+            Error::Sql(error) => error.into(),
+            Error::Storage(error) => error,
+            error => torii_storage::StorageError::other(error),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use starknet::core::types::Felt;
+    use torii_storage::StorageError;
+
+    use super::Error;
+
+    #[test]
+    fn storage_error_conversion_preserves_sql_errors() {
+        let error = StorageError::from(Error::Sql(sqlx::Error::RowNotFound));
+
+        assert!(matches!(error, StorageError::Sql(sqlx::Error::RowNotFound)));
+    }
+
+    #[test]
+    fn storage_error_conversion_preserves_nested_storage_errors() {
+        let world_address = Felt::from(0xa_u8);
+        let selector = Felt::from(0xb_u8);
+
+        let error = StorageError::from(Error::Storage(StorageError::model_not_found(
+            world_address,
+            selector,
+        )));
+
+        assert!(matches!(
+            error,
+            StorageError::ModelNotFound {
+                world_address: missing_world,
+                selector: missing_selector,
+            } if missing_world == world_address && missing_selector == selector
+        ));
+    }
+}

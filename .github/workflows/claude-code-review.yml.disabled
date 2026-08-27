@@ -1,3 +1,5 @@
+# Disabled in the Underware fork: agent-assisted reviews are initiated and owned by reviewers,
+# not credential-driven CI.
 name: Claude Code Review
 
 on:

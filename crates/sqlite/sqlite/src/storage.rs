@@ -10,6 +10,7 @@ use dojo_world::{config::WorldMetadata, contracts::abigen::model::Layout};
 use sqlx::{sqlite::SqliteRow, FromRow, Row};
 use starknet::core::types::U256;
 use starknet_crypto::{poseidon_hash_many, Felt};
+use torii_cache::CacheError;
 use torii_math::I256;
 use torii_proto::{
     schema::Entity, Activity, ActivityQuery, AggregationEntry, AggregationQuery, BalanceId,
@@ -20,8 +21,11 @@ use torii_proto::{
     TokenTransferQuery, Transaction, TransactionCall, TransactionQuery,
 };
 use torii_sqlite_types::{HookEvent, Model as SQLModel};
-use torii_storage::{utils::format_world_scoped_id, ReadOnlyStorage, Storage, StorageError};
-use tracing::warn;
+use torii_storage::{
+    utils::{format_world_scoped_id, hex_felt},
+    ReadOnlyStorage, Storage, StorageError,
+};
+use tracing::debug;
 
 use crate::{
     constants::{
@@ -55,21 +59,34 @@ impl ReadOnlyStorage for Sql {
     /// Returns the model metadata for the storage.
     async fn model(&self, world_address: Felt, selector: Felt) -> Result<Model, StorageError> {
         if let Some(cache) = &self.cache {
-            if let Ok(model) = cache.model(world_address, selector).await {
-                return Ok(model);
-            } else {
-                warn!(
-                    target: LOG_TARGET,
-                    model_selector = %format!("{:#x}", selector),
-                    "Failed to get model from cache, falling back to database."
-                );
+            match cache.model(world_address, selector).await {
+                Ok(model) => return Ok(model),
+                Err(CacheError::ModelNotFound(_)) => {
+                    debug!(
+                        target: LOG_TARGET,
+                        model_selector = %hex_felt(&selector),
+                        "Model missing from cache, falling back to database."
+                    );
+                }
+                Err(error) => {
+                    debug!(
+                        target: LOG_TARGET,
+                        model_selector = %hex_felt(&selector),
+                        error = ?error,
+                        "Failed to get model from cache, falling back to database."
+                    );
+                }
             }
         }
 
-        let model = sqlx::query_as::<_, SQLModel>("SELECT * FROM models WHERE id = ?")
+        let row = sqlx::query_as::<_, SQLModel>("SELECT * FROM models WHERE id = ?")
             .bind(format_world_scoped_id(&world_address, &selector))
-            .fetch_one(&self.pool)
+            .fetch_optional(&self.pool)
             .await?;
+
+        let Some(model) = row else {
+            return Err(StorageError::model_not_found(world_address, selector));
+        };
         let model: torii_proto::Model = model.into();
 
         // Update cache to prevent repeated cache misses
@@ -92,14 +109,17 @@ impl ReadOnlyStorage for Sql {
     ) -> Result<Vec<Model>, StorageError> {
         // Try cache first
         if let Some(cache) = &self.cache {
-            if let Ok(models) = cache.models(world_addresses, selectors).await {
-                return Ok(models);
-            } else {
-                warn!(
-                    target: LOG_TARGET,
-                    selectors = ?selectors.iter().map(|s| format!("{:#x}", s)).collect::<Vec<_>>(),
-                    "Failed to get models from cache, falling back to database.",
-                );
+            match cache.models(world_addresses, selectors).await {
+                Ok(models) => return Ok(models),
+                Err(error) => {
+                    debug!(
+                        target: LOG_TARGET,
+                        selector_count = selectors.len(),
+                        world_count = world_addresses.len(),
+                        error = ?error,
+                        "Failed to get models from cache, falling back to database.",
+                    );
+                }
             }
         }
 
@@ -2254,9 +2274,8 @@ impl Storage for Sql {
             TransactionReceipt::Deploy(r) => &r.execution_resources,
             TransactionReceipt::DeployAccount(r) => &r.execution_resources,
         };
-        let execution_resources_json = serde_json::to_string(execution_resources).map_err(|e| {
-            StorageError::from(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-        })?;
+        let execution_resources_json =
+            serde_json::to_string(execution_resources).map_err(StorageError::other)?;
 
         // Extract execution status and revert reason
         let (execution_status, revert_reason) = match execution_result {
@@ -2597,5 +2616,127 @@ impl Sql {
         }
 
         Ok(unique_models)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+    use std::sync::Arc;
+
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use tempfile::TempDir;
+    use tokio::sync::mpsc::unbounded_channel;
+    use torii_cache::{CacheError, InMemoryCache, ReadOnlyCache};
+    use torii_storage::{test_utils::ReadOnlyStorageStub, utils::format_world_scoped_id};
+
+    use super::*;
+    use crate::SqlConfig;
+
+    async fn setup_sql() -> (TempDir, sqlx::Pool<sqlx::Sqlite>, Sql) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("storage-tests.db");
+        let options = SqliteConnectOptions::from_str(db_path.to_str().unwrap())
+            .unwrap()
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+
+        let (executor, _rx) = unbounded_channel();
+        let sql = Sql {
+            pool: pool.clone(),
+            executor,
+            config: SqlConfig::default(),
+            cache: None,
+        };
+
+        (temp_dir, pool, sql)
+    }
+
+    async fn insert_model_row(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        world_address: Felt,
+        selector: Felt,
+    ) {
+        sqlx::query(
+            "INSERT INTO models (id, world_address, model_selector, namespace, name, class_hash, contract_address, layout, legacy_store, schema, packed_size, unpacked_size, executed_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(format_world_scoped_id(&world_address, &selector))
+        .bind(felt_to_sql_string(&world_address))
+        .bind(felt_to_sql_string(&selector))
+        .bind("ns")
+        .bind("Model")
+        .bind(felt_to_sql_string(&Felt::from(0x123u64)))
+        .bind(felt_to_sql_string(&Felt::from(0x456u64)))
+        .bind(serde_json::to_string(&Layout::Fixed(vec![])).unwrap())
+        .bind(true)
+        .bind(serde_json::to_string(&Ty::Tuple(vec![])).unwrap())
+        .bind(0_i64)
+        .bind(0_i64)
+        .bind("2026-05-01T00:00:00Z")
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn model_returns_model_not_found_when_model_is_missing() {
+        let (_temp_dir, _pool, sql) = setup_sql().await;
+        let world = Felt::from(0xa_u8);
+        let selector = Felt::from(0xb_u8);
+
+        let err = sql.model(world, selector).await.unwrap_err();
+        assert!(matches!(
+            err,
+            StorageError::ModelNotFound {
+                world_address,
+                selector: missing_selector
+            } if world_address == world && missing_selector == selector
+        ));
+    }
+
+    #[tokio::test]
+    async fn model_repopulates_cache_after_database_fallback() {
+        let (_temp_dir, pool, sql_no_cache) = setup_sql().await;
+        let cache = Arc::new(
+            InMemoryCache::new(Arc::new(ReadOnlyStorageStub::new()))
+                .await
+                .unwrap(),
+        );
+        let world = Felt::from(0xc_u8);
+        let selector = Felt::from(0xd_u8);
+
+        insert_model_row(&pool, world, selector).await;
+
+        assert!(matches!(
+            cache.model(world, selector).await,
+            Err(CacheError::ModelNotFound(s)) if s == selector
+        ));
+
+        let sql = sql_no_cache.with_cache(cache.clone());
+        let fetched = sql.model(world, selector).await.unwrap();
+        assert_eq!(fetched.world_address, world);
+        assert_eq!(fetched.selector, selector);
+        assert_eq!(fetched.namespace, "ns");
+        assert_eq!(fetched.name, "Model");
+
+        let cached = cache.model(world, selector).await.unwrap();
+        assert_eq!(cached.selector, selector);
+        assert_eq!(cached.name, "Model");
+
+        sqlx::query("DELETE FROM models WHERE id = ?")
+            .bind(format_world_scoped_id(&world, &selector))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let cached_after_delete = sql.model(world, selector).await.unwrap();
+        assert_eq!(cached_after_delete.selector, selector);
+        assert_eq!(cached_after_delete.name, "Model");
     }
 }

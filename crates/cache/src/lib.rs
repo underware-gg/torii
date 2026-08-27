@@ -56,8 +56,20 @@ pub trait Cache: ReadOnlyCache + Send + Sync + std::fmt::Debug {
     /// Clear all models from the cache.
     async fn clear_models(&self);
 
+    /// Restore rollback-sensitive cache state to the last committed storage view.
+    async fn reset_to_committed_storage(&self) -> Result<(), CacheError>;
+
     /// Mark a token as registered.
     async fn mark_token_registered(&self, token_id: TokenId);
+
+    /// Rebuild the token-registration registry from committed storage.
+    ///
+    /// Used after a rollback: `mark_token_registered` mutates the registry before SQL
+    /// commits, so a rolled-back chunk can leave the cache claiming a token is
+    /// registered when the storage row is gone. Resetting from `storage.token_ids()`
+    /// restores the cache to the last committed state without losing tokens that
+    /// previous chunks did register successfully.
+    async fn reset_token_registry(&self) -> Result<(), CacheError>;
 
     /// Clear the balances diff.
     async fn clear_balances_diff(&self);
@@ -130,8 +142,18 @@ impl Cache for InMemoryCache {
         self.model_cache.clear().await
     }
 
+    async fn reset_to_committed_storage(&self) -> Result<(), CacheError> {
+        self.clear_balances_diff().await;
+        self.clear_models().await;
+        self.reset_token_registry().await
+    }
+
     async fn mark_token_registered(&self, token_id: TokenId) {
         self.erc_cache.mark_token_registered(token_id).await
+    }
+
+    async fn reset_token_registry(&self) -> Result<(), CacheError> {
+        self.erc_cache.reset_token_registry().await
     }
 
     async fn clear_balances_diff(&self) {
@@ -252,21 +274,38 @@ pub struct ErcCache {
     // the registry is a map of token_id to a mutex that is used to track if the token is registered
     // we need a mutex for the token state to prevent race conditions in case of multiple token regs
     pub token_id_registry: DashMap<TokenId, TokenState>,
+    storage: Arc<dyn ReadOnlyStorage>,
 }
 
 impl ErcCache {
     pub async fn new(storage: Arc<dyn ReadOnlyStorage>) -> Result<Self, Error> {
-        // read existing token_id's from balances table and cache them
-        let token_id_registry: HashSet<TokenId> = storage.token_ids().await?;
+        let token_id_registry = Self::load_token_registry(&*storage).await?;
 
         Ok(Self {
             balances_diff: DashMap::new(),
             total_supply_diff: DashMap::new(),
-            token_id_registry: token_id_registry
-                .into_iter()
-                .map(|token_id| (token_id, TokenState::Registered))
-                .collect(),
+            token_id_registry,
+            storage,
         })
+    }
+
+    async fn load_token_registry(
+        storage: &dyn ReadOnlyStorage,
+    ) -> Result<DashMap<TokenId, TokenState>, Error> {
+        let token_ids: HashSet<TokenId> = storage.token_ids().await?;
+        Ok(token_ids
+            .into_iter()
+            .map(|token_id| (token_id, TokenState::Registered))
+            .collect())
+    }
+
+    pub async fn reset_token_registry(&self) -> Result<(), Error> {
+        let rebuilt = Self::load_token_registry(&*self.storage).await?;
+        self.token_id_registry.clear();
+        for (token_id, state) in rebuilt {
+            self.token_id_registry.insert(token_id, state);
+        }
+        Ok(())
     }
 
     pub async fn get_token_registration_lock(&self, token_id: TokenId) -> Option<Arc<Mutex<()>>> {
@@ -484,5 +523,121 @@ pub fn get_entrypoint_name_from_class(class: &ClassAbi, selector: Felt) -> Optio
             }
             _ => None,
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use torii_storage::test_utils::ReadOnlyStorageStub;
+
+    fn token_id(byte: u8) -> TokenId {
+        TokenId::Contract(Felt::from(byte))
+    }
+
+    /// Mirrors the production hazard: `mark_token_registered` runs before SQL commit;
+    /// rollback drops the SQL but leaves the cache claiming the token is registered.
+    /// `reset_token_registry` must restore the cache to "what storage actually has".
+    #[tokio::test]
+    async fn reset_token_registry_drops_uncommitted_marks() {
+        let storage = Arc::new(ReadOnlyStorageStub::new());
+        // T1 was registered in a previous (committed) chunk.
+        storage.set_token_ids(vec![token_id(1)]);
+
+        let cache = InMemoryCache::new(storage.clone()).await.unwrap();
+
+        // T2 gets marked in this chunk but the SQL row never lands (rollback).
+        cache.mark_token_registered(token_id(2)).await;
+        assert!(cache.is_token_registered(&token_id(1)).await);
+        assert!(cache.is_token_registered(&token_id(2)).await);
+
+        cache.reset_token_registry().await.unwrap();
+
+        assert!(cache.is_token_registered(&token_id(1)).await);
+        assert!(!cache.is_token_registered(&token_id(2).clone()).await);
+    }
+
+    /// `clear_models` is the model-cache half of the rollback recovery. After clearing,
+    /// `cache.model()` must report missing — callers fall through to storage which
+    /// reflects the committed (rolled-back) state.
+    #[tokio::test]
+    async fn clear_models_empties_the_cache() {
+        let storage = Arc::new(ReadOnlyStorageStub::new());
+        let cache = InMemoryCache::new(storage).await.unwrap();
+
+        let world = Felt::from(0xa);
+        let selector = Felt::from(0xb);
+        let model = Model {
+            world_address: world,
+            namespace: "ns".into(),
+            name: "M".into(),
+            selector,
+            class_hash: Felt::ZERO,
+            contract_address: Felt::ZERO,
+            packed_size: 0,
+            unpacked_size: 0,
+            layout: dojo_world::contracts::abigen::model::Layout::Fixed(vec![]),
+            schema: dojo_types::schema::Ty::Tuple(vec![]),
+            use_legacy_store: true,
+        };
+        cache.register_model(world, selector, model).await;
+        assert!(cache.model(world, selector).await.is_ok());
+
+        cache.clear_models().await;
+
+        assert!(matches!(
+            cache.model(world, selector).await,
+            Err(CacheError::ModelNotFound(s)) if s == selector
+        ));
+    }
+
+    #[tokio::test]
+    async fn reset_to_committed_storage_restores_rollback_sensitive_cache_state() {
+        let storage = Arc::new(ReadOnlyStorageStub::new());
+        storage.set_token_ids(vec![token_id(1)]);
+
+        let cache = InMemoryCache::new(storage).await.unwrap();
+
+        let world = Felt::from(0xa);
+        let selector = Felt::from(0xb);
+        let model = Model {
+            world_address: world,
+            namespace: "ns".into(),
+            name: "M".into(),
+            selector,
+            class_hash: Felt::ZERO,
+            contract_address: Felt::ZERO,
+            packed_size: 0,
+            unpacked_size: 0,
+            layout: dojo_world::contracts::abigen::model::Layout::Fixed(vec![]),
+            schema: dojo_types::schema::Ty::Tuple(vec![]),
+            use_legacy_store: true,
+        };
+        cache.register_model(world, selector, model).await;
+        cache.mark_token_registered(token_id(2)).await;
+        cache
+            .update_balance_diff(
+                token_id(1),
+                Felt::ZERO,
+                Felt::from(0x2_u8),
+                U256::from(3_u8),
+            )
+            .await;
+
+        assert!(cache.model(world, selector).await.is_ok());
+        assert!(cache.is_token_registered(&token_id(2)).await);
+        assert!(!cache.balances_diff().await.is_empty());
+        assert!(!cache.total_supply_diff().await.is_empty());
+
+        cache.reset_to_committed_storage().await.unwrap();
+
+        assert!(matches!(
+            cache.model(world, selector).await,
+            Err(CacheError::ModelNotFound(s)) if s == selector
+        ));
+        assert!(cache.is_token_registered(&token_id(1)).await);
+        assert!(!cache.is_token_registered(&token_id(2)).await);
+        assert!(cache.balances_diff().await.is_empty());
+        assert!(cache.total_supply_diff().await.is_empty());
     }
 }

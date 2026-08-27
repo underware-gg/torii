@@ -6,7 +6,9 @@ use starknet::core::types::{Event, Felt, TransactionContent};
 use starknet::providers::Provider;
 use tokio::sync::Semaphore;
 use torii_cache::{Cache, ContractClassCache};
+use torii_proto::Model;
 use torii_storage::Storage;
+use tracing::debug;
 
 mod constants;
 pub mod erc;
@@ -35,6 +37,34 @@ pub struct EventProcessorContext<P: Provider + Sync + Send + 'static> {
     pub config: EventProcessorConfig,
     pub nft_metadata_semaphore: Arc<Semaphore>,
     pub is_at_head: bool,
+}
+
+impl<P: Provider + Sync + Send + 'static> EventProcessorContext<P> {
+    /// Looks up a model registered for the current contract.
+    ///
+    /// `Ok(Some(model))` — model exists; `Ok(None)` — model is unknown but namespace
+    /// filtering is configured, so the caller should skip silently;
+    /// `Err(Error::ModelNotFound)` — model is unknown and namespace filtering is off,
+    /// so the caller should fail loud.
+    pub async fn resolve_model_or_skip(&self, selector: Felt) -> Result<Option<Model>> {
+        match self.storage.model(self.contract_address, selector).await {
+            Ok(model) => Ok(Some(model)),
+            Err(torii_storage::StorageError::ModelNotFound { .. })
+                if !self.config.namespaces.is_empty() =>
+            {
+                debug!(
+                    target: "torii::processors::resolve_model",
+                    selector = %selector,
+                    "Model not found in storage, skipping. This can happen if only specific namespaces are indexed."
+                );
+                Ok(None)
+            }
+            Err(torii_storage::StorageError::ModelNotFound { .. }) => {
+                Err(Error::ModelNotFound(selector))
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

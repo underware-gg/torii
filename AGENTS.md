@@ -44,6 +44,9 @@
 
 - **Source of truth:** `.agents/`.
 - **Symlinks:** `CLAUDE.md` is a symlink to this file (`AGENTS.md`). Editor/agent configs should symlink skills from `.agents/skills`.
+- **Fork policy:** this is Underware's fork — read `AGENTS.underware.md` for remotes, branches,
+  versioning, commit conventions, and testing setup.
+- **Local overrides:** read `AGENTS.local.md`, if present.
 - **Skills install/update:**
 
 ```bash
