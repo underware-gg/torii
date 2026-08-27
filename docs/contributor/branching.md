@@ -30,6 +30,10 @@ require one approval. Members of `underware-gg/admin` may instead use GitHub's r
 pull-request-only bypass for their own maintainer PRs or exceptional cases; the bypass does not
 permit direct pushes or skip CI. Other contributors always require an approving review.
 
+Promote `dev/*` pull requests with GitHub's **Create a merge commit** option. The development branch
+already contains the reviewed logical commits; preserve their original identities and add the merge
+commit as the explicit promotion boundary on `main`. Do not squash or rebase these promotion PRs.
+
 This is development synchronization only. Once a commit is on `main`, an Underware release builds
 that local source and its `uw-v*` tag; it does not fetch or inspect `upstream`.
 
