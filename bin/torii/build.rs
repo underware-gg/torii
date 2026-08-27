@@ -18,6 +18,12 @@ fn git(args: &[&str]) -> Option<String> {
 }
 
 fn underware_version() -> String {
+    if let Ok(version) = env::var("UNDERWARE_VERSION") {
+        if !version.is_empty() {
+            return version;
+        }
+    }
+
     git(&[
         "describe",
         "--tags",
@@ -31,6 +37,8 @@ fn underware_version() -> String {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    println!("cargo:rerun-if-env-changed=UNDERWARE_VERSION");
+
     // vergen watches HEAD and the current branch. The fork release tag and packed-tag fallback
     // are separate inputs to the version specification.
     if let Some(git_dir) = git(&["rev-parse", "--path-format=absolute", "--git-dir"]) {

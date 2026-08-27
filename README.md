@@ -1,5 +1,13 @@
 # Torii - Automatic Indexer for Dojo
 
+[![Underware release](https://img.shields.io/github/v/release/underware-gg/torii?filter=uw-v%2A&sort=semver&display_name=tag&label=Underware%20release)](https://github.com/underware-gg/torii/releases)
+[![Torii base on main](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Funderware-gg%2Ftorii%2Fmain%2FCargo.toml&query=%24.workspace.package.version&prefix=v&label=Torii%20base%20on%20main)](https://github.com/dojoengine/torii/releases)
+
+> [!NOTE]
+> This is Underware's actively maintained fork of [Dojo's Torii](https://github.com/dojoengine/torii).
+> It tracks upstream while carrying generally applicable fixes and publishing independent `uw-v*`
+> releases. See the [fork documentation](docs/README.md) for usage and contribution guidance.
+
 Torii is a specialized indexer designed for Dojo games running on Starknet. It indexes and tracks onchain data changes, providing a comprehensive view of game state and history.
 
 ## Building

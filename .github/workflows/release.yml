@@ -1,9 +1,17 @@
 name: Underware release
+run-name: Underware uw-v${{ inputs.version }} from main
 
 on:
-  push:
-    tags:
-      - "uw-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Underware release version without the uw-v prefix
+        required: true
+        type: string
+      commit:
+        description: Exact main commit to release
+        required: true
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -26,34 +34,40 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
-      - name: Verify tag and release commit
+      - name: Verify release candidate
         id: release_info
+        env:
+          CANDIDATE_VERSION: ${{ inputs.version }}
+          REQUESTED_COMMIT: ${{ inputs.commit }}
         run: |
-          tag_name="${{ github.ref_name }}"
-          version="${tag_name#uw-v}"
-          release_commit="$(git rev-parse "${tag_name}^{commit}")"
-
-          if ! ./scripts/release.sh validate-version "$version"; then
-            echo "Expected a canonical Underware release semver tag, got $tag_name" >&2
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "Underware releases must be dispatched from main" >&2
             exit 1
           fi
 
-          if ! ./scripts/release.sh validate-version-order "$version"; then
-            echo "Underware release tag $tag_name is not newer than every published release" >&2
+          version="$CANDIDATE_VERSION"
+          tag_name="uw-v${version}"
+          release_commit="$(git rev-parse HEAD)"
+          if [[ ! "$REQUESTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Requested release commit must be a full Git commit SHA" >&2
+            exit 1
+          fi
+          if [ "$release_commit" != "$REQUESTED_COMMIT" ]; then
+            echo "Dispatched main commit $release_commit does not match requested commit $REQUESTED_COMMIT" >&2
             exit 1
           fi
 
-          if [ "$(git cat-file -t "$tag_name")" != "tag" ]; then
-            echo "Underware release tag $tag_name must be annotated" >&2
+          if ! ./scripts/release.sh validate-candidate "$version"; then
+            echo "Underware release candidate $tag_name is invalid or already used" >&2
             exit 1
           fi
 
           git fetch origin main:refs/remotes/origin/main
           main_commit="$(git rev-parse origin/main)"
           if ! git merge-base --is-ancestor "$release_commit" "$main_commit"; then
-            echo "Tag $tag_name must point at a commit on origin/main" >&2
+            echo "Release candidate must remain on origin/main" >&2
             exit 1
           fi
 
@@ -61,13 +75,19 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "release_commit=$release_commit" >> "$GITHUB_OUTPUT"
 
-  verify-version:
+  test:
     needs: prepare
+    uses: ./.github/workflows/test.yml
+    permissions:
+      contents: read
+
+  verify-version:
+    needs: [prepare, test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ needs.prepare.outputs.tag_name }}
+          ref: ${{ needs.prepare.outputs.release_commit }}
           fetch-depth: 1
 
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
@@ -112,6 +132,7 @@ jobs:
       PLATFORM_NAME: ${{ matrix.job.platform }}
       TARGET: ${{ matrix.job.target }}
       ARCH: ${{ matrix.job.arch }}
+      UNDERWARE_VERSION: ${{ needs.prepare.outputs.version }}
     strategy:
       matrix:
         job:
@@ -141,7 +162,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ needs.prepare.outputs.tag_name }}
+          ref: ${{ needs.prepare.outputs.release_commit }}
           fetch-depth: 1
 
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
@@ -242,40 +263,16 @@ jobs:
           path: ${{ steps.artifacts.outputs.file_name }}
           retention-days: 14
 
-  create-draft-release:
+  verify-container:
     runs-on: ubuntu-latest
     needs: [prepare, verify-version, release]
     permissions:
-      contents: write
-    env:
-      GITHUB_USER: ${{ github.repository_owner }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: artifacts-*
-          path: artifacts
-          merge-multiple: true
-      - name: Display structure of downloaded files
-        run: ls -R artifacts
-      - run: gh release create ${{ needs.prepare.outputs.tag_name }} ./artifacts/*.{gz,zip} --generate-notes --draft
-
-  publish:
-    runs-on: ubuntu-latest
-    needs: [prepare, verify-version, release, create-draft-release]
-    environment:
-      name: underware-release
-    permissions:
-      contents: write
-      packages: write
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ needs.prepare.outputs.tag_name }}
+          ref: ${{ needs.prepare.outputs.release_commit }}
           fetch-depth: 1
 
       - name: Download binaries
@@ -288,12 +285,96 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f211e3e9ded2d9377c8cadc4489a4e38014bc4c9 # v1
 
+      - name: Verify multi-platform container build
+        uses: docker/build-push-action@1104d471370f9806843c095c1db02b5a90c5f8b6 # v3
+        with:
+          push: false
+          platforms: linux/amd64,linux/arm64
+          build-contexts: |
+            artifacts=artifacts
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: [prepare, verify-version, release, verify-container]
+    environment:
+      name: underware-release
+    permissions:
+      contents: write
+      packages: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_commit }}
+          fetch-depth: 0
+
+      - name: Download binaries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: binaries-*
+          path: artifacts/linux
+          merge-multiple: true
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: artifacts-*
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f211e3e9ded2d9377c8cadc4489a4e38014bc4c9 # v1
+
       - name: Login to GitHub Container Registry
         uses: docker/login-action@dd4fa0671be5250ee6f50aedf4cb05514abda2c7 # v1
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create or verify immutable release tag
+        env:
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.release_commit }}
+          TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          git fetch origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main; then
+            echo "Release commit $RELEASE_COMMIT is no longer on origin/main" >&2
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG_NAME" >/dev/null 2>&1; then
+            git fetch --force origin "refs/tags/$TAG_NAME:refs/tags/$TAG_NAME"
+            if [ "$(git cat-file -t "$TAG_NAME")" != "tag" ]; then
+              echo "Existing release tag $TAG_NAME is not annotated" >&2
+              exit 1
+            fi
+            if [ "$(git rev-parse "${TAG_NAME}^{commit}")" != "$RELEASE_COMMIT" ]; then
+              echo "Existing release tag $TAG_NAME points at another commit" >&2
+              exit 1
+            fi
+          else
+            git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              tag -a "$TAG_NAME" "$RELEASE_COMMIT" -m "Underware Torii ${{ needs.prepare.outputs.version }}"
+            git push origin "refs/tags/$TAG_NAME"
+          fi
+
+      - name: Create or update draft release
+        env:
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.release_commit }}
+          TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
+        run: |
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" release-artifacts/* --clobber
+          else
+            gh release create "$TAG_NAME" release-artifacts/* \
+              --draft --generate-notes --target "$RELEASE_COMMIT" --verify-tag
+          fi
 
       - name: Build and push docker image
         uses: docker/build-push-action@1104d471370f9806843c095c1db02b5a90c5f8b6 # v3
@@ -305,4 +386,6 @@ jobs:
             artifacts=artifacts
 
       - name: Publish draft release
-        run: gh release edit ${{ needs.prepare.outputs.tag_name }} --draft=false
+        env:
+          TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
+        run: gh release edit "$TAG_NAME" --draft=false

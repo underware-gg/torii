@@ -11,11 +11,14 @@ Two parallel version lines: **our version is ordinary semver that never resets**
 - **Torii base:** the workspace Cargo version in the exact Underware commit being built. It is
   inherited from the upstream source we integrated; the fork never maintains it separately.
 
-The `torii` binary stamps this single value at build time. It takes the newest reachable
-`uw-v*` tag for our version, reads the Torii base from the source's Cargo metadata, and includes
-the build's HEAD SHA. The same value is used by `torii --version`, the service endpoint, the HTTP
-User-Agent, and snapshot compatibility checks. Without a reachable fork tag, the version is
-`unreleased-uw`; missing SHA metadata is reported as `unknown` rather than guessed.
+The `torii` binary stamps this single value at build time. Ordinary builds take the newest reachable
+`uw-v*` tag for our version; the protected release workflow supplies its validated candidate version
+before the final tag exists. Both read the Torii base from the source's Cargo metadata and include
+the build's HEAD SHA. The workflow creates the matching tag at that exact commit only after every
+release build succeeds. The same value is used by `torii --version`, the service endpoint, the HTTP
+User-Agent, and snapshot compatibility checks. Without a reachable fork tag or an explicit release
+version, the version is `unreleased-uw`; missing SHA metadata is reported as `unknown` rather than
+guessed.
 
 ## Rules
 
@@ -46,19 +49,24 @@ non-force-pushable `main` with mandatory pull requests and the required `release
 one-approval review ruleset with a pull-request-only bypass for the `underware-gg/admin` team, and
 immutable release tags. `check` performs the same safeguard check, and is otherwise read-only apart
 from refreshing the local `origin/main` reference. It requires a clean working tree, local `main` at
-exactly `origin/main`, and no remote `uw-v<version>` tag. `candidate` then creates or validates a
-canonical annotated tag at that commit, verifies the release binary locally, and pushes **only the
-tag**. It never pushes a branch.
+exactly `origin/main`, and no remote `uw-v<version>` tag. `candidate` then dispatches the protected
+release workflow for that version and exact commit. It does not create or push a tag.
 
-Release workflows use GitHub Actions' multi-run FIFO queue and run one at a time. Pending releases
-are retained rather than replaced, preserving publication order and ensuring the `latest` container
-tag always represents the last approved Underware release.
+Release workflows use GitHub Actions' multi-run FIFO queue and run one at a time. Pending candidates
+are retained rather than replaced. Each candidate runs the full test suite, builds and verifies all
+release platforms, stores the resulting artifacts, and verifies the multi-platform container build
+before publication can be approved.
 
-Pushing the tag starts the Underware release workflow, which verifies that the tagged commit remains
-on `origin/main`, bundles it, and creates a draft GitHub release. Publication requires approval through the protected
-`underware-release` GitHub Environment; only then are the Docker image and the draft release
-published. The tag is the source of the Underware version; never hand-edit it into `Cargo.toml` or
-source code. A release build does not fetch or inspect official Torii.
+Publication requires approval through the protected `underware-release` GitHub Environment. Only
+after the builds pass and approval is granted does the workflow create the canonical annotated tag
+at the tested commit, create or update the draft GitHub release from those exact artifacts, publish
+the Docker image, and publish the release. The publication steps are idempotent: if an external
+service fails after tag creation, rerun the same job with the same version rather than changing the
+immutable tag. A failure before publication approval creates no tag and consumes no version.
+
+The final tag records the Underware version; never hand-edit it into `Cargo.toml` or source code. A
+release build does not fetch or inspect official Torii. Publication order ensures the `latest`
+container tag always represents the last approved Underware release.
 
 Before the first release, configure the base `main` protection and its separate review-only ruleset,
 protect `uw-v*` tags against update and deletion, and configure `underware-release` with required

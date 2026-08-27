@@ -1,5 +1,5 @@
 # Disabled in the Underware fork: this obsolete upstream preview-release stub has no jobs and
-# creates failed workflow runs. Underware releases use the protected uw-v* tag workflow instead.
+# creates failed workflow runs. Underware releases use the protected build-before-tag workflow instead.
 #
 # Due to workflow limitation of github, this file is merely here
 # to support triggering the workflow on a dev branch, without having

@@ -8,16 +8,18 @@ Usage:
   ./scripts/release.sh check <version>
   ./scripts/release.sh candidate <version>
   ./scripts/release.sh validate-version <version>
+  ./scripts/release.sh validate-candidate <version>
   ./scripts/release.sh validate-version-order <version>
   ./scripts/release.sh verify-binary <version> <binary>
   ./scripts/release.sh verify-settings
 
 Commands:
-  check      Verify that the checked-out main commit is ready to be tagged.
-  candidate  Run check, create or validate the local uw-v<version> tag, verify the
-             release binary, and push only that tag to origin.
+  check      Verify that the checked-out main commit is ready for a release candidate.
+  candidate  Run check and dispatch the protected build-before-tag release workflow.
   validate-version
              Verify that a version is canonical Underware release semver.
+  validate-candidate
+             Verify that a version is canonical, newer, and unused on origin.
   validate-version-order
              Verify that a version is not older than any published Underware release.
   verify-binary
@@ -62,29 +64,42 @@ require_main_tip() {
     [[ "$head" == "$main_tip" ]] || fail "local main does not equal origin/main"
 }
 
-local_tag_state() {
-    local tag="$1"
-    local tag_object tag_commit
-
-    if ! git show-ref --verify --quiet "refs/tags/$tag"; then
-        echo "absent"
-        return
-    fi
-
-    tag_object="$(git cat-file -t "$tag")"
-    [[ "$tag_object" == "tag" ]] || fail "$tag must be an annotated tag"
-
-    tag_commit="$(git rev-parse "${tag}^{commit}")"
-    [[ "$tag_commit" == "$(git rev-parse HEAD)" ]] || fail "$tag does not point at HEAD"
-    echo "present"
-}
-
 require_remote_tag_absent() {
     local tag="$1" remote_tag
 
     remote_tag="$(git ls-remote --tags origin "refs/tags/$tag")" || \
         fail "could not query origin for $tag"
     [[ -z "$remote_tag" ]] || fail "$tag already exists on origin"
+}
+
+require_release_candidate() {
+    local version="$1"
+    local tag="uw-v${version}"
+
+    require_release_version "$version"
+    require_remote_tag_absent "$tag"
+    require_newer_than_published_release "$version"
+}
+
+github_repository() {
+    local origin_url repository
+
+    origin_url="$(git remote get-url origin)" || fail "could not read the origin remote"
+    case "$origin_url" in
+        https://github.com/*)
+            repository="${origin_url#https://github.com/}"
+            ;;
+        git@github.com:*)
+            repository="${origin_url#git@github.com:}"
+            ;;
+        ssh://git@github.com/*)
+            repository="${origin_url#ssh://git@github.com/}"
+            ;;
+        *)
+            fail "origin must be a GitHub repository, got $origin_url"
+            ;;
+    esac
+    printf '%s\n' "${repository%.git}"
 }
 
 require_newer_than_published_release() {
@@ -110,28 +125,13 @@ require_newer_than_published_release() {
 }
 
 require_release_settings() {
-    local origin_url repository reviewers self_review admin_bypass
+    local repository reviewers self_review admin_bypass
     local main_reviews main_checks main_admins force_pushes deletions conversations
     local review_ruleset review_scope review_rule admin_team_id review_bypasses
     local tag_ruleset tag_scope tag_rules tag_bypasses
 
     command -v gh >/dev/null || fail "GitHub CLI (gh) is required to verify release settings"
-    origin_url="$(git remote get-url origin)" || fail "could not read the origin remote"
-    case "$origin_url" in
-        https://github.com/*)
-            repository="${origin_url#https://github.com/}"
-            ;;
-        git@github.com:*)
-            repository="${origin_url#git@github.com:}"
-            ;;
-        ssh://git@github.com/*)
-            repository="${origin_url#ssh://git@github.com/}"
-            ;;
-        *)
-            fail "origin must be a GitHub repository, got $origin_url"
-            ;;
-    esac
-    repository="${repository%.git}"
+    repository="$(github_repository)"
 
     reviewers="$(gh api "repos/$repository/environments/underware-release" \
         --jq '[.protection_rules[]? | select(.type == "required_reviewers") | .reviewers[]?] | length')" || \
@@ -208,9 +208,9 @@ require_release_settings() {
         fail "Underware main reviews must allow only the admin team to bypass from a pull request"
 
     tag_ruleset="$(gh api "repos/$repository/rulesets" \
-        --jq '.[] | select(.name == "Underware release tags" and .target == "tag" and .enforcement == "active") | .id')" || \
+        --jq '[.[] | select(.name == "Underware release tags" and .target == "tag" and .enforcement == "active")] | if length == 1 then .[0].id else empty end')" || \
         fail "could not read repository rulesets"
-    [[ -n "$tag_ruleset" ]] || fail "active Underware release tag ruleset is missing"
+    [[ -n "$tag_ruleset" ]] || fail "active Underware release tag ruleset is missing or duplicated"
 
     tag_scope="$(gh api "repos/$repository/rulesets/$tag_ruleset" \
         --jq '((.conditions.ref_name.include // []) | index("refs/tags/uw-v*") != null) and ((.conditions.ref_name.exclude // []) | length == 0)')" || \
@@ -225,35 +225,26 @@ require_release_settings() {
 
     tag_bypasses="$(gh api "repos/$repository/rulesets/$tag_ruleset" --jq '.bypass_actors | length')" || \
         fail "could not read Underware release tag ruleset bypasses"
-    [[ "$tag_bypasses" == "0" ]] || fail "Underware release tag ruleset must not allow bypasses"
+    [[ "$tag_bypasses" == "0" ]] || fail "Underware release tag immutability must not allow bypasses"
+
 }
 
 check() {
     local version="$1"
     local tag="uw-v${version}"
-    local base_version tag_state
+    local base_version
 
-    require_release_version "$version"
     require_clean_worktree
     require_main_tip
     require_release_settings
-    require_remote_tag_absent "$tag"
-    require_newer_than_published_release "$version"
-    tag_state="$(local_tag_state "$tag")"
+    require_release_candidate "$version"
     base_version="$(torii_base_version)"
     [[ -n "$base_version" ]] || fail "could not read workspace Cargo version"
 
     echo "release check passed"
     echo "  commit: $(git rev-parse --short HEAD)"
-    echo "  tag: $tag ($tag_state locally, absent on origin)"
+    echo "  tag: $tag (absent on origin)"
     echo "  torii base: v$base_version"
-}
-
-verify_release_binary() {
-    local version="$1"
-
-    cargo build --release --bin torii
-    verify_binary_version "$version" target/release/torii
 }
 
 verify_binary_version() {
@@ -273,22 +264,14 @@ verify_binary_version() {
 candidate() {
     local version="$1"
     local tag="uw-v${version}"
-    local tag_state
+    local repository
 
     check "$version"
-    tag_state="$(local_tag_state "$tag")"
-    if [[ "$tag_state" == "absent" ]]; then
-        git tag -a "$tag" -m "Underware Torii ${version}"
-    fi
-
-    verify_release_binary "$version"
-
-    # Recheck after the local build so a concurrent main update cannot receive this tag.
-    require_main_tip
-    require_remote_tag_absent "$tag"
-    require_newer_than_published_release "$version"
-    git push origin "refs/tags/$tag"
-    echo "pushed release candidate tag $tag"
+    repository="$(github_repository)"
+    gh workflow run release.yml --repo "$repository" --ref main \
+        -f "version=$version" -f "commit=$(git rev-parse HEAD)"
+    echo "dispatched release candidate $tag for $(git rev-parse --short HEAD)"
+    echo "the immutable tag will be created only after builds pass and publication is approved"
 }
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || fail "not inside a Git repository"
@@ -311,6 +294,10 @@ case "$1" in
     validate-version)
         [[ $# -eq 2 ]] || { usage; exit 2; }
         require_release_version "$2"
+        ;;
+    validate-candidate)
+        [[ $# -eq 2 ]] || { usage; exit 2; }
+        require_release_candidate "$2"
         ;;
     validate-version-order)
         [[ $# -eq 2 ]] || { usage; exit 2; }
