@@ -44,13 +44,16 @@ separate action from that promotion: check out the published local `main`, then 
 ./scripts/release.sh candidate 0.4.0
 ```
 
-`verify-settings` confirms that GitHub has a peer-approved release environment with no bypass, a
-non-force-pushable `main` with mandatory pull requests and the required `release-policy` check, a
-one-approval review ruleset with a pull-request-only bypass for the `underware-gg/admin` team, and
-immutable release tags. `check` performs the same safeguard check, and is otherwise read-only apart
-from refreshing the local `origin/main` reference. It requires a clean working tree, local `main` at
-exactly `origin/main`, and no remote `uw-v<version>` tag. `candidate` then dispatches the protected
-release workflow for that version and exact commit. It does not create or push a tag.
+`verify-settings` confirms that GitHub has a protected `underware-release` environment requiring
+`admin` team approval and forbidding administrator bypass, a non-force-pushable `main` with
+mandatory pull requests and the required `release-policy` check, a one-approval review ruleset with
+a pull-request-only bypass for the `underware-gg/admin` team, and immutable release tags. A required
+reviewer may approve a candidate they started — the same admin authority as the PR bypass, without
+skipping the environment wait. `check` performs the same safeguard check, and is otherwise
+read-only apart from refreshing the local `origin/main` reference. It requires a clean working
+tree, local `main` at exactly `origin/main`, and no remote `uw-v<version>` tag. `candidate` then
+dispatches the protected release workflow for that version and exact commit. It does not create or
+push a tag.
 
 Only one release candidate may be outstanding at a time. `candidate` refuses to dispatch while
 another release run is active, and the workflow rejects a run if an earlier-dispatched candidate is
@@ -60,10 +63,12 @@ platforms, stores the resulting artifacts, and builds the multi-platform contain
 publication can be approved.
 
 The container build is staged in GHCR without a tag and identified by its immutable digest.
-Publication requires approval through the protected `underware-release` GitHub Environment. Only
-after the builds pass and approval is granted does the workflow create the canonical annotated tag
-at the tested commit, create or update the draft GitHub release from those exact artifacts, attach
-the stable version tag to the staged container digest, and publish the release. The same digest is
+Publication requires an explicit approval through the protected `underware-release` GitHub
+Environment. Required reviewers are the `underware-gg/admin` team; an admin may approve a candidate
+they dispatched. Administrators cannot skip the environment. Only after the builds pass and
+approval is granted does the workflow create the canonical annotated tag at the tested commit,
+create or update the draft GitHub release from those exact artifacts, attach the stable version tag
+to the staged container digest, and publish the release. The same digest is
 also promoted to `latest` only while it remains at least as high as every published Underware
 release.
 
@@ -77,9 +82,10 @@ release build does not fetch or inspect official Torii. The publish-time release
 an older rerun from moving the `latest` container tag backwards.
 
 Before the first release, configure the base `main` protection and its separate review-only ruleset,
-protect `uw-v*` tags against update and deletion, and configure `underware-release` with required
-reviewers. `verify-settings` makes these external requirements observable; without the environment
-protection, GitHub does not pause the publish job.
+protect `uw-v*` tags against update and deletion, and configure `underware-release` with the `admin`
+team as required reviewers, self-review allowed, and administrator bypass disabled.
+`verify-settings` makes these external requirements observable; without the environment protection,
+GitHub does not pause the publish job.
 
 ## Why not encode both in one version string
 

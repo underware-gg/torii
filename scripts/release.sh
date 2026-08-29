@@ -188,7 +188,7 @@ require_release_queue_head() {
 }
 
 require_release_settings() {
-    local repository reviewers self_review admin_bypass
+    local repository reviewers prevent_self_review admin_bypass
     local main_reviews main_checks main_admins force_pushes deletions conversations
     local review_ruleset review_scope review_rule admin_team_id review_bypasses
     local tag_ruleset tag_scope tag_rules tag_bypasses
@@ -202,11 +202,11 @@ require_release_settings() {
     [[ "$reviewers" =~ ^[1-9][0-9]*$ ]] || \
         fail "underware-release must require at least one reviewer"
 
-    self_review="$(gh api "repos/$repository/environments/underware-release" \
-        --jq '[.protection_rules[]? | select(.type == "required_reviewers") | .prevent_self_review] | index(false) | not')" || \
+    prevent_self_review="$(gh api "repos/$repository/environments/underware-release" \
+        --jq '[.protection_rules[]? | select(.type == "required_reviewers") | .prevent_self_review] | unique | .[0]')" || \
         fail "could not read underware-release self-review protection"
-    [[ "$self_review" == "true" ]] || \
-        fail "underware-release must prevent self-review"
+    [[ "$prevent_self_review" == "false" ]] || \
+        fail "underware-release must allow a required reviewer to approve a candidate they started"
 
     admin_bypass="$(gh api "repos/$repository/environments/underware-release" --jq '.can_admins_bypass')" || \
         fail "could not read underware-release administrator bypass setting"
