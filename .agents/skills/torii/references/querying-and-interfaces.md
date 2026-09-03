@@ -145,6 +145,14 @@ Static token/contract image serving:
 Optional image sizing query params:
 - `?h=...&w=...` (aliases: `height`, `width`)
 
+Stored metadata JSON (read straight from the `tokens` table, no fetching):
+- `/static/{contract_address}/metadata`
+- `/static/{contract_address}/{token_id}/metadata`
+
+Responds `application/json` with a content ETag and `Cache-Control: public, no-cache`, so
+clients revalidate each time and see metadata updates immediately. Returns `404` when the
+token is unknown or has no metadata stored yet.
+
 Metadata reindex endpoint:
 - `/metadata/reindex/{contract_address}/{token_id}`
 
