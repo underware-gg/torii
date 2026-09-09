@@ -1103,7 +1103,7 @@ pub struct GrpcOptions {
     #[arg(
         long = "grpc.tcp_keepalive_interval",
         default_value_t = DEFAULT_GRPC_TCP_KEEPALIVE_SECS,
-        help = "TCP keepalive interval in seconds for gRPC connections. Set to 0 to disable TCP keepalive."
+        help = "TCP keepalive interval in seconds for gRPC connections and the public HTTP listener. Set to 0 to disable TCP keepalive."
     )]
     pub tcp_keepalive_interval: u64,
 
@@ -1111,7 +1111,7 @@ pub struct GrpcOptions {
     #[arg(
         long = "grpc.http2_keepalive_interval",
         default_value_t = DEFAULT_GRPC_HTTP2_KEEPALIVE_INTERVAL_SECS,
-        help = "HTTP/2 keepalive interval in seconds for gRPC connections. Set to 0 to disable HTTP/2 keepalive."
+        help = "HTTP/2 keepalive interval in seconds for gRPC connections and the public HTTP listener. Set to 0 to disable HTTP/2 keepalive."
     )]
     pub http2_keepalive_interval: u64,
 
@@ -1119,7 +1119,7 @@ pub struct GrpcOptions {
     #[arg(
         long = "grpc.http2_keepalive_timeout",
         default_value_t = DEFAULT_GRPC_HTTP2_KEEPALIVE_TIMEOUT_SECS,
-        help = "HTTP/2 keepalive timeout in seconds for gRPC connections. How long to wait for keepalive ping responses."
+        help = "HTTP/2 keepalive timeout in seconds for gRPC connections and the public HTTP listener. How long to wait for keepalive ping responses."
     )]
     pub http2_keepalive_timeout: u64,
 

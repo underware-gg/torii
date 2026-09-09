@@ -60,6 +60,7 @@ use tracing_indicatif::span_ext::IndicatifSpanExt;
 use url::form_urlencoded;
 
 mod constants;
+mod memory;
 
 use crate::constants::LOG_TARGET;
 const MIN_THREADS: usize = 1;
@@ -875,6 +876,9 @@ impl Runner {
             let server = dojo_metrics::Server::new(prometheus_handle).with_process_metrics();
             tokio::spawn(server.start(addr));
         }
+
+        // Allocator gauges and a periodic memory summary in the log, independent of --metrics.
+        tokio::spawn(memory::run());
 
         // Create dedicated runtimes
         let query_runtime = create_query_runtime(allocation.query_threads);

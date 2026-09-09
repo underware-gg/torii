@@ -16,8 +16,10 @@ use hyper::server::conn::AddrStream;
 use hyper::service::make_service_fn;
 use hyper::{Body, Client, Request, Response, Server, StatusCode};
 use hyper_reverse_proxy::ReverseProxy;
+use metrics::{counter, describe_counter, describe_gauge, gauge};
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use serde_json::json;
+use socket2::{SockRef, TcpKeepalive};
 use sqlx::SqlitePool;
 use starknet::providers::Provider;
 use tokio::sync::RwLock;
@@ -70,6 +72,58 @@ const DEFAULT_EXPOSED_HEADERS: [&str; 4] = [
     "grpc-encoding",
 ];
 const DEFAULT_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
+impl ProxySettings {
+    fn tcp_keepalive(&self) -> Option<Duration> {
+        (self.tcp_keepalive_interval > 0).then(|| Duration::from_secs(self.tcp_keepalive_interval))
+    }
+
+    fn http2_keepalive_interval(&self) -> Option<Duration> {
+        (self.http2_keepalive_interval > 0)
+            .then(|| Duration::from_secs(self.http2_keepalive_interval))
+    }
+
+    fn http2_keepalive_timeout(&self) -> Option<Duration> {
+        (self.http2_keepalive_timeout > 0)
+            .then(|| Duration::from_secs(self.http2_keepalive_timeout))
+    }
+}
+
+/// Counts one accepted client connection for as long as it is alive.
+///
+/// `torii_proxy_connections` is the number of connections currently open on the public listener.
+/// A subscription can only hold memory while its connection is open, so this gauge is the upper
+/// bound on how many clients, dead or alive, the server is still serving.
+struct ConnectionGuard {
+    remote_addr: IpAddr,
+}
+
+impl ConnectionGuard {
+    fn new(remote_addr: IpAddr) -> Self {
+        gauge!("torii_proxy_connections").increment(1.0);
+        counter!("torii_proxy_connections_total").increment(1);
+        debug!(target: LOG_TARGET, remote_addr = %remote_addr, "Connection opened.");
+        Self { remote_addr }
+    }
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        gauge!("torii_proxy_connections").decrement(1.0);
+        debug!(target: LOG_TARGET, remote_addr = %self.remote_addr, "Connection closed.");
+    }
+}
+
+fn describe_connection_metrics() {
+    describe_gauge!(
+        "torii_proxy_connections",
+        "Client connections currently open on the public HTTP listener."
+    );
+    describe_counter!(
+        "torii_proxy_connections_total",
+        "Client connections accepted on the public HTTP listener since start."
+    );
+}
 
 /// Create a gRPC-compatible HTTP/2 proxy client with configurable keepalive settings
 pub fn create_grpc_proxy_client(
@@ -140,6 +194,7 @@ pub struct Proxy<P: Provider + Sync + Send + Debug + 'static> {
     grpc_proxy_client: Arc<ReverseProxy<HttpConnector<GaiResolver>>>,
     websocket_proxy_client: Arc<ReverseProxy<HttpConnector<GaiResolver>>>,
     hostname: Option<String>,
+    proxy_settings: ProxySettings,
     _provider: std::marker::PhantomData<P>,
 }
 
@@ -205,6 +260,7 @@ impl<P: Provider + Sync + Send + Debug + 'static> Proxy<P> {
             grpc_proxy_client,
             websocket_proxy_client,
             hostname,
+            proxy_settings,
             _provider: std::marker::PhantomData,
         }
     }
@@ -303,6 +359,8 @@ impl<P: Provider + Sync + Send + Debug + 'static> Proxy<P> {
     ) -> anyhow::Result<()> {
         let addr = self.addr;
         let tls_config = self.tls_config.clone();
+        let settings = self.proxy_settings.clone();
+        describe_connection_metrics();
 
         // Configure server with or without TLS
         if let Some(tls_config) = tls_config {
@@ -322,8 +380,20 @@ impl<P: Provider + Sync + Send + Debug + 'static> Proxy<P> {
                                 let version_spec = self.version_spec.clone();
                                 let cors_layer = cors_layer.clone();
                                 let hostname = self.hostname.clone();
+                                let settings = settings.clone();
+
+                                // Probe idle peers so a client that vanished without closing
+                                // the socket is torn down instead of pinning its subscriptions.
+                                if let Some(keepalive) = settings.tcp_keepalive() {
+                                    if let Err(e) = SockRef::from(&stream)
+                                        .set_tcp_keepalive(&TcpKeepalive::new().with_time(keepalive))
+                                    {
+                                        debug!(target: LOG_TARGET, remote_addr = %remote_addr, error = ?e, "Failed to set TCP keepalive.");
+                                    }
+                                }
 
                                 tokio::spawn(async move {
+                                    let _connection = ConnectionGuard::new(remote_addr.ip());
                                     match tls_acceptor.accept(stream).await {
                                         Ok(tls_stream) => {
                                             let service = ServiceBuilder::new()
@@ -338,7 +408,15 @@ impl<P: Provider + Sync + Send + Debug + 'static> Proxy<P> {
                                                     }
                                                 });
 
-                                            if let Err(e) = hyper::server::conn::Http::new()
+                                            let mut http = hyper::server::conn::Http::new();
+                                            if let Some(interval) = settings.http2_keepalive_interval() {
+                                                http.http2_keep_alive_interval(interval);
+                                                if let Some(timeout) = settings.http2_keepalive_timeout() {
+                                                    http.http2_keep_alive_timeout(timeout);
+                                                }
+                                            }
+
+                                            if let Err(e) = http
                                                 .serve_connection(tls_stream, service)
                                                 .with_upgrades() // Enable connection upgrades for WebSocket over TLS
                                                 .await
@@ -378,6 +456,8 @@ impl<P: Provider + Sync + Send + Debug + 'static> Proxy<P> {
                 let version_spec = self.version_spec.clone();
                 let cors_layer = cors_layer.clone();
                 let hostname = hostname.clone();
+                // Lives as long as the per-connection service, i.e. the connection itself.
+                let connection = Arc::new(ConnectionGuard::new(remote_addr));
 
                 let service =
                     ServiceBuilder::new()
@@ -386,7 +466,9 @@ impl<P: Provider + Sync + Send + Debug + 'static> Proxy<P> {
                             let handlers = handlers.clone();
                             let version_spec = version_spec.clone();
                             let hostname = hostname.clone();
+                            let connection = connection.clone();
                             async move {
+                                let _connection = connection;
                                 let handlers = handlers.read().await;
                                 handle(
                                     remote_addr,
@@ -402,7 +484,16 @@ impl<P: Provider + Sync + Send + Debug + 'static> Proxy<P> {
                 async { Ok::<_, Infallible>(service) }
             });
 
-            let server = Server::bind(&addr);
+            // Probe idle peers so a client that vanished without closing the socket is torn
+            // down instead of pinning its subscriptions. Without this the listener relied on
+            // the OS default, which on Linux is two hours of idle time before the first probe.
+            let mut server = Server::bind(&addr).tcp_keepalive(settings.tcp_keepalive());
+            if let Some(interval) = settings.http2_keepalive_interval() {
+                server = server.http2_keep_alive_interval(interval);
+                if let Some(timeout) = settings.http2_keepalive_timeout() {
+                    server = server.http2_keep_alive_timeout(timeout);
+                }
+            }
             server
                 .serve(make_svc)
                 .with_graceful_shutdown(async move {

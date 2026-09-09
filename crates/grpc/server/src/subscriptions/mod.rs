@@ -13,10 +13,72 @@ pub mod entity;
 pub mod error;
 pub mod event;
 pub mod event_message;
+pub mod monitor;
 pub mod token;
 pub mod token_balance;
 pub mod token_transfer;
 pub mod transaction;
+
+/// Bookkeeping every subscription manager exposes so the [`monitor`] task can report and
+/// sweep them uniformly.
+pub trait SubscriberBookkeeping: Send + Sync {
+    /// Stable label used for metrics and logs, e.g. `"entity"`.
+    fn kind(&self) -> &'static str;
+
+    /// Number of registered subscribers. This includes subscribers whose client has gone away
+    /// but that no update has flushed out yet.
+    fn subscriber_count(&self) -> usize;
+
+    /// Remove subscribers whose receiving end has been dropped and return how many were removed.
+    ///
+    /// Dispatch only notices a closed subscriber when it tries to send to it, so on a quiet
+    /// world a disconnected client would otherwise sit in the map until the next update.
+    fn prune_closed(&self) -> usize;
+}
+
+/// Record that dispatch removed a subscriber. `reason` is one of `"full"` (slow client,
+/// buffer exhausted), `"closed"` (client hung up) or `"pruned"` (found closed by the sweep).
+pub(crate) fn record_subscriber_dropped(kind: &'static str, reason: &'static str, count: usize) {
+    metrics::counter!(
+        "torii_grpc_subscribers_dropped_total",
+        "kind" => kind,
+        "reason" => reason
+    )
+    .increment(count as u64);
+}
+
+/// Implements [`SubscriberBookkeeping`] for a manager shaped as
+/// `struct M { subscribers: DashMap<_, S>, .. }` where `S` has a `sender: tokio::sync::mpsc::Sender<_>`.
+macro_rules! impl_subscriber_bookkeeping {
+    ($manager:ty, $kind:literal) => {
+        impl $manager {
+            /// Metric label identifying this subscription kind.
+            pub const KIND: &'static str = $kind;
+        }
+
+        impl $crate::subscriptions::SubscriberBookkeeping for $manager {
+            fn kind(&self) -> &'static str {
+                Self::KIND
+            }
+
+            fn subscriber_count(&self) -> usize {
+                self.subscribers.len()
+            }
+
+            fn prune_closed(&self) -> usize {
+                let before = self.subscribers.len();
+                self.subscribers
+                    .retain(|_, subscriber| !subscriber.sender.is_closed());
+                let removed = before.saturating_sub(self.subscribers.len());
+                if removed > 0 {
+                    $crate::subscriptions::record_subscriber_dropped(Self::KIND, "pruned", removed);
+                }
+                removed
+            }
+        }
+    };
+}
+pub(crate) use impl_subscriber_bookkeeping;
 
 pub(crate) fn match_entity(
     id: Felt,

@@ -44,6 +44,7 @@ anyhow.workspace = true
 base64.workspace = true
 num_cpus = "1.16.0"
 dashmap.workspace = true
+metrics.workspace = true
 torii-storage.workspace = true
 torii-cache.workspace = true
 
