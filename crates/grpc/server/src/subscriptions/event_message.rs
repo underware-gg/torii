@@ -40,6 +40,8 @@ pub struct EventMessageManager {
     config: GrpcConfig,
 }
 
+super::impl_subscriber_bookkeeping!(EventMessageManager, "event_message");
+
 impl EventMessageManager {
     pub fn new(config: GrpcConfig) -> Self {
         Self {
@@ -155,10 +157,12 @@ impl Service {
                     trace!(target = LOG_TARGET, subscription_id = %idx, "Event message update sent to subscriber");
                 }
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    super::record_subscriber_dropped(EventMessageManager::KIND, "full", 1);
                     error!(target = LOG_TARGET, subscription_id = %idx, entity_id = ?event.entity.hashed_keys, "Disconnecting slow subscriber - channel full");
                     closed_stream.push(*idx);
                 }
                 Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    super::record_subscriber_dropped(EventMessageManager::KIND, "closed", 1);
                     trace!(target = LOG_TARGET, subscription_id = %idx, "Subscriber channel closed");
                     closed_stream.push(*idx);
                 }

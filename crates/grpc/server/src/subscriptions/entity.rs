@@ -37,6 +37,8 @@ pub struct EntityManager {
     config: GrpcConfig,
 }
 
+super::impl_subscriber_bookkeeping!(EntityManager, "entity");
+
 impl EntityManager {
     pub fn new(config: GrpcConfig) -> Self {
         Self {
@@ -152,10 +154,12 @@ impl Service {
                     trace!(target = LOG_TARGET, subscription_id = %idx, "Entity update sent to subscriber");
                 }
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    super::record_subscriber_dropped(EntityManager::KIND, "full", 1);
                     error!(target = LOG_TARGET, subscription_id = %idx, entity_id = ?entity.entity.hashed_keys, "Disconnecting slow subscriber - channel full");
                     closed_stream.push(*idx);
                 }
                 Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    super::record_subscriber_dropped(EntityManager::KIND, "closed", 1);
                     trace!(target = LOG_TARGET, subscription_id = %idx, "Subscriber channel closed");
                     closed_stream.push(*idx);
                 }

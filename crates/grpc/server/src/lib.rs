@@ -154,6 +154,22 @@ impl<P: Provider + Sync> DojoWorld<P> {
             &achievement_progression_manager,
         )));
 
+        // Sweep closed subscribers and publish subscription gauges so leaks are visible.
+        let monitored: Vec<Arc<dyn subscriptions::SubscriberBookkeeping>> = vec![
+            entity_manager.clone(),
+            event_message_manager.clone(),
+            event_manager.clone(),
+            contract_manager.clone(),
+            token_balance_manager.clone(),
+            token_manager.clone(),
+            token_transfer_manager.clone(),
+            transaction_manager.clone(),
+            aggregation_manager.clone(),
+            activity_manager.clone(),
+            achievement_progression_manager.clone(),
+        ];
+        tokio::spawn(subscriptions::monitor::run(monitored));
+
         Self {
             storage,
             messaging,

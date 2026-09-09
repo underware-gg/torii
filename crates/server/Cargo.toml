@@ -55,3 +55,7 @@ rustls-pemfile = "1.0.4"
 
 # Hostname support
 hostname = "0.4"
+
+# Connection accounting and dead-peer detection on the public listener
+metrics.workspace = true
+socket2 = "0.5"
