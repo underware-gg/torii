@@ -135,10 +135,6 @@ jobs:
             platform: darwin
             target: aarch64-apple-darwin
             arch: arm64
-          - os: windows-latest
-            platform: win32
-            target: x86_64-pc-windows-msvc
-            arch: amd64
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -174,22 +170,8 @@ jobs:
           # See: https://github.com/jemalloc/jemalloc/issues/467
           echo "JEMALLOC_SYS_WITH_LG_PAGE=16" >> $GITHUB_ENV
 
-      # Workaround for https://github.com/actions/runner-images/issues/12432
-      # from https://github.com/rust-lang/rust/issues/141626#issuecomment-2919419236
-      # Visual Studio bug tracker https://developercommunity.visualstudio.com/t/Regression-from-1943:-linkexe-crashes/10912960
-      - name: Setup RUSTFLAGS (Windows)
-        if: ${{ matrix.job.target == 'x86_64-pc-windows-msvc' }}
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
-        with:
-          script: |
-            core.exportVariable('RUSTFLAGS', '-Csymbol-mangling-version=v0');
-
-      # windows-latest no longer exposes the Visual Studio generator to the `cmake` crate, so the
-      # aws-lc-sys build script panics ("couldn't determine visual studio generator"). vcvars fixes it.
-      - name: MSVC environment (Windows)
-        if: ${{ matrix.job.target == 'x86_64-pc-windows-msvc' }}
-        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
-
+      # No Windows target: the aws-lc-sys build (cmake) breaks on windows-latest, nobody deploys
+      # torii on Windows from this fork, and a failed matrix job blocks the whole release.
       - name: Build binary
         run: |
           cargo --version
@@ -199,11 +181,7 @@ jobs:
         env:
           UNDERWARE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          binary="target/${TARGET}/release/torii"
-          if [ "$PLATFORM_NAME" = "win32" ]; then
-            binary="${binary}.exe"
-          fi
-          ./scripts/release.sh verify-binary "$UNDERWARE_VERSION" "$binary"
+          ./scripts/release.sh verify-binary "$UNDERWARE_VERSION" "target/${TARGET}/release/torii"
         shell: bash
 
       - name: Archive binaries
@@ -214,17 +192,11 @@ jobs:
           if [ "$PLATFORM_NAME" == "linux" ]; then
             tar -czvf "torii_${VERSION_NAME}_${PLATFORM_NAME}_${ARCH}.tar.gz" -C ./target/${TARGET}/release torii
             echo "file_name=torii_${VERSION_NAME}_${PLATFORM_NAME}_${ARCH}.tar.gz" >> $GITHUB_OUTPUT
-          elif [ "$PLATFORM_NAME" == "darwin" ]; then
+          else
             # We need to use gtar here otherwise the archive is corrupt.
             # See: https://github.com/actions/virtual-environments/issues/2619
             gtar -czvf "torii_${VERSION_NAME}_${PLATFORM_NAME}_${ARCH}.tar.gz" -C ./target/${TARGET}/release torii
             echo "file_name=torii_${VERSION_NAME}_${PLATFORM_NAME}_${ARCH}.tar.gz" >> $GITHUB_OUTPUT
-          else
-            ls ./target/${TARGET}/release
-            cd ./target/${TARGET}/release
-            7z a -tzip "torii_${VERSION_NAME}_${PLATFORM_NAME}_${ARCH}.zip" torii.exe
-            mv "torii_${VERSION_NAME}_${PLATFORM_NAME}_${ARCH}.zip" ../../../
-            echo "file_name=torii_${VERSION_NAME}_${PLATFORM_NAME}_${ARCH}.zip" >> $GITHUB_OUTPUT
           fi
         shell: bash
 
@@ -266,7 +238,7 @@ jobs:
           merge-multiple: true
       - name: Display structure of downloaded files
         run: ls -R artifacts
-      - run: gh release create ${{ needs.prepare.outputs.tag_name }} ./artifacts/*.{gz,zip} --generate-notes --draft
+      - run: gh release create ${{ needs.prepare.outputs.tag_name }} ./artifacts/*.gz --generate-notes --draft
 
   publish:
     runs-on: ubuntu-latest
