@@ -113,6 +113,8 @@ jobs:
       TARGET: ${{ matrix.job.target }}
       ARCH: ${{ matrix.job.arch }}
     strategy:
+      # One platform failing must not cancel the others; the release needs the full matrix.
+      fail-fast: false
       matrix:
         job:
           # The OS is used for the runner
@@ -181,6 +183,12 @@ jobs:
         with:
           script: |
             core.exportVariable('RUSTFLAGS', '-Csymbol-mangling-version=v0');
+
+      # windows-latest no longer exposes the Visual Studio generator to the `cmake` crate, so the
+      # aws-lc-sys build script panics ("couldn't determine visual studio generator"). vcvars fixes it.
+      - name: MSVC environment (Windows)
+        if: ${{ matrix.job.target == 'x86_64-pc-windows-msvc' }}
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
       - name: Build binary
         run: |
