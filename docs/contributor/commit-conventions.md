@@ -7,8 +7,10 @@ Conventional commits, matching upstream's style: `fix(indexer):`, `refactor(proc
 
 ## History discipline
 
-- Keep each logical change as one commit. Prefer a readable linear history over preserving every
-  intermediate step.
+- Keep each logical change as one commit. Prefer a readable sequence of purposeful commits over
+  preserving every intermediate step.
+- Preserve that sequence when promoting `dev/*` to `main`: use **Create a merge commit**. The merge
+  commit records the reviewed promotion boundary; do not squash or rebase the logical commits.
 - **No notes-only commits.** An earlier workflow recorded promotion-target SHAs in separate
   notes commits; the result was history that had to be stripped out again. Working notes stay
   untracked.

@@ -11,11 +11,14 @@ Two parallel version lines: **our version is ordinary semver that never resets**
 - **Torii base:** the workspace Cargo version in the exact Underware commit being built. It is
   inherited from the upstream source we integrated; the fork never maintains it separately.
 
-The `torii` binary stamps this single value at build time. It takes the newest reachable
-`uw-v*` tag for our version, reads the Torii base from the source's Cargo metadata, and includes
-the build's HEAD SHA. The same value is used by `torii --version`, the service endpoint, the HTTP
-User-Agent, and snapshot compatibility checks. Without a reachable fork tag, the version is
-`unreleased-uw`; missing SHA metadata is reported as `unknown` rather than guessed.
+The `torii` binary stamps this single value at build time. Ordinary builds take the newest reachable
+`uw-v*` tag for our version; the protected release workflow supplies its validated candidate version
+before the final tag exists. Both read the Torii base from the source's Cargo metadata and include
+the build's HEAD SHA. The workflow creates the matching tag at that exact commit only after every
+release build succeeds. The same value is used by `torii --version`, the service endpoint, the HTTP
+User-Agent, and snapshot compatibility checks. Without a reachable fork tag or an explicit release
+version, the version is `unreleased-uw`; missing SHA metadata is reported as `unknown` rather than
+guessed.
 
 ## Rules
 
@@ -41,29 +44,48 @@ separate action from that promotion: check out the published local `main`, then 
 ./scripts/release.sh candidate 0.4.0
 ```
 
-`verify-settings` confirms that GitHub has a peer-approved release environment with no bypass, a
-non-force-pushable `main` with mandatory pull requests and the required `release-policy` check, a
-one-approval review ruleset with a pull-request-only bypass for the `underware-gg/admin` team, and
-immutable release tags. `check` performs the same safeguard check, and is otherwise read-only apart
-from refreshing the local `origin/main` reference. It requires a clean working tree, local `main` at
-exactly `origin/main`, and no remote `uw-v<version>` tag. `candidate` then creates or validates a
-canonical annotated tag at that commit, verifies the release binary locally, and pushes **only the
-tag**. It never pushes a branch.
+`verify-settings` confirms that GitHub has a protected `underware-release` environment requiring
+`admin` team approval and forbidding administrator bypass, a non-force-pushable `main` with
+mandatory pull requests and the required `release-policy` check, a one-approval review ruleset with
+a pull-request-only bypass for the `underware-gg/admin` team, and immutable release tags. A required
+reviewer may approve a candidate they started — the same admin authority as the PR bypass, without
+skipping the environment wait. `check` performs the same safeguard check, and is otherwise
+read-only apart from refreshing the local `origin/main` reference. It requires a clean working
+tree, local `main` at exactly `origin/main`, and no remote `uw-v<version>` tag. `candidate` then
+dispatches the protected release workflow for that version and exact commit. It does not create or
+push a tag.
 
-Release workflows use GitHub Actions' multi-run FIFO queue and run one at a time. Pending releases
-are retained rather than replaced, preserving publication order and ensuring the `latest` container
-tag always represents the last approved Underware release.
+Only one release candidate may be outstanding at a time. `candidate` refuses to dispatch while
+another release run is active, and the workflow rejects a run if an earlier-dispatched candidate is
+still active. GitHub Actions' multi-run queue is retained as a serialization backstop rather than as
+an ordering guarantee. Each candidate runs the full test suite, builds and verifies all release
+platforms, stores the resulting artifacts, and builds the multi-platform container before
+publication can be approved.
 
-Pushing the tag starts the Underware release workflow, which verifies that the tagged commit remains
-on `origin/main`, bundles it, and creates a draft GitHub release. Publication requires approval through the protected
-`underware-release` GitHub Environment; only then are the Docker image and the draft release
-published. The tag is the source of the Underware version; never hand-edit it into `Cargo.toml` or
-source code. A release build does not fetch or inspect official Torii.
+The container build is staged in GHCR without a tag and identified by its immutable digest.
+Publication requires an explicit approval through the protected `underware-release` GitHub
+Environment. Required reviewers are the `underware-gg/admin` team; an admin may approve a candidate
+they dispatched. Administrators cannot skip the environment. Only after the builds pass and
+approval is granted does the workflow create the canonical annotated tag at the tested commit,
+create or update the draft GitHub release from those exact artifacts, attach the stable version tag
+to the staged container digest, and publish the release. The same digest is
+also promoted to `latest` only while it remains at least as high as every published Underware
+release.
+
+The publication steps are safe to rerun: if an external service fails after tag creation, rerun the
+same job with the same version rather than changing the immutable tag. An older rerun can complete
+its versioned image and release without moving `latest` backwards. A failure before publication
+approval creates no Git tag or user-visible release and consumes no version.
+
+The final tag records the Underware version; never hand-edit it into `Cargo.toml` or source code. A
+release build does not fetch or inspect official Torii. The publish-time release-order check keeps
+an older rerun from moving the `latest` container tag backwards.
 
 Before the first release, configure the base `main` protection and its separate review-only ruleset,
-protect `uw-v*` tags against update and deletion, and configure `underware-release` with required
-reviewers. `verify-settings` makes these external requirements observable; without the environment
-protection, GitHub does not pause the publish job.
+protect `uw-v*` tags against update and deletion, and configure `underware-release` with the `admin`
+team as required reviewers, self-review allowed, and administrator bypass disabled.
+`verify-settings` makes these external requirements observable; without the environment protection,
+GitHub does not pause the publish job.
 
 ## Why not encode both in one version string
 
