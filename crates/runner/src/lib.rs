@@ -62,7 +62,7 @@ use url::form_urlencoded;
 mod constants;
 mod memory;
 
-use crate::constants::LOG_TARGET;
+use crate::constants::{LOG_TARGET, METRICS_UPKEEP_INTERVAL};
 const MIN_THREADS: usize = 1;
 
 #[derive(Debug, Clone)]
@@ -873,6 +873,17 @@ impl Runner {
             );
             info!(target: LOG_TARGET, %addr, "Starting metrics endpoint.");
             let prometheus_handle = PrometheusRecorder::install("torii")?;
+            // The recorder is installed without the exporter's upkeep task, so histogram
+            // samples are only drained when the endpoint is scraped. Drain them on a timer
+            // so an endpoint nobody scrapes does not grow for as long as the process runs.
+            let upkeep_handle = prometheus_handle.clone();
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(METRICS_UPKEEP_INTERVAL);
+                loop {
+                    ticker.tick().await;
+                    upkeep_handle.run_upkeep();
+                }
+            });
             let server = dojo_metrics::Server::new(prometheus_handle).with_process_metrics();
             tokio::spawn(server.start(addr));
         }
