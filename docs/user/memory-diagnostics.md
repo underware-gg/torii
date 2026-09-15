@@ -48,6 +48,11 @@ Gauges, exported on the metrics endpoint (`--metrics`) and refreshed every 15 to
 The upstream `jemalloc_*` gauges from `dojo-metrics` accumulate across scrapes and are not
 usable for this. Graph the `torii_memory_*` ones.
 
+Histogram samples are folded into their exported summaries every five seconds. Before this,
+they were only folded when `/metrics` was rendered, so an enabled endpoint that nobody scraped
+accumulated every sample from every poll and query for the life of the process, about 20 MiB
+per day at the default polling interval. Leaving `--metrics` on without a scraper is safe now.
+
 Log lines, independent of `--metrics`:
 
 - `torii::runner::memory` logs a memory summary at `info` every five minutes.
