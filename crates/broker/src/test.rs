@@ -8,6 +8,24 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn test_subscriber_count_tracks_stream_lifetime() {
+        #[derive(Debug, Clone, PartialEq)]
+        struct CountMsg(u32);
+
+        assert_eq!(MemoryBroker::<Update<CountMsg>>::subscriber_count(), 0);
+
+        let first = MemoryBroker::<Update<CountMsg>>::subscribe();
+        let second = MemoryBroker::<Update<CountMsg>>::subscribe_optimistic();
+        assert_eq!(MemoryBroker::<Update<CountMsg>>::subscriber_count(), 2);
+
+        drop(first);
+        assert_eq!(MemoryBroker::<Update<CountMsg>>::subscriber_count(), 1);
+
+        drop(second);
+        assert_eq!(MemoryBroker::<Update<CountMsg>>::subscriber_count(), 0);
+    }
+
+    #[tokio::test]
     async fn test_publish_and_subscribe() {
         #[derive(Debug, Clone, PartialEq)]
         struct PublishSubscribeMsg {

@@ -108,4 +108,13 @@ where
     {
         with_senders(f)
     }
+
+    /// Number of live streams currently subscribed to this update type.
+    ///
+    /// Each gRPC subscription service holds exactly one stream per type, and every GraphQL
+    /// subscription holds its own, so a count that stays above the number of running services
+    /// while no GraphQL client is connected points at a stream that was never dropped.
+    pub fn subscriber_count() -> usize {
+        with_senders::<Update<T>, _, _>(|senders| senders.0.len())
+    }
 }

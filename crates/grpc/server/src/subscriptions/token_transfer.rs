@@ -42,6 +42,8 @@ pub struct TokenTransferManager {
     config: GrpcConfig,
 }
 
+super::impl_subscriber_bookkeeping!(TokenTransferManager, "token_transfer");
+
 impl TokenTransferManager {
     pub fn new(config: GrpcConfig) -> Self {
         Self {
@@ -158,11 +160,13 @@ impl Service {
                     // Message sent successfully
                 }
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    super::record_subscriber_dropped(TokenTransferManager::KIND, "full", 1);
                     // Channel is full, subscriber is too slow - disconnect them
                     trace!(target = LOG_TARGET, subscription_id = %idx, "Disconnecting slow subscriber - channel full");
                     closed_stream.push(*idx);
                 }
                 Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    super::record_subscriber_dropped(TokenTransferManager::KIND, "closed", 1);
                     // Channel is closed, subscriber has disconnected
                     closed_stream.push(*idx);
                 }

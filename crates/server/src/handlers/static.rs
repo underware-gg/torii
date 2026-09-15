@@ -59,6 +59,46 @@ pub struct ImageQuery {
     width: Option<u32>,
 }
 
+/// The resource requested for a token or contract under `/static`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StaticResource {
+    Image,
+    Metadata,
+}
+
+impl StaticResource {
+    fn parse(segment: &str) -> Option<Self> {
+        match segment {
+            "image" => Some(Self::Image),
+            "metadata" => Some(Self::Metadata),
+            _ => None,
+        }
+    }
+}
+
+/// Builds a quoted, content-derived ETag from the first 8 bytes of the SHA-256 hash.
+fn content_etag(contents: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(contents);
+    let hash_bytes = hasher.finalize();
+    format!(
+        "\"{}\"",
+        hash_bytes[..8]
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>()
+    )
+}
+
+fn json_error_response(status: StatusCode, message: &str) -> Response<Body> {
+    let body = serde_json::json!({ "error": message }).to_string();
+    Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .unwrap()
+}
+
 #[derive(Debug)]
 pub struct StaticHandler {
     artifacts_dir: Utf8PathBuf,
@@ -112,28 +152,33 @@ impl StaticHandler {
         // Split the path and validate format
         let parts: Vec<&str> = path.split('/').collect();
 
-        // Handle both token format: contract_address/token_id/image
-        // and contract format: contract_address/image
-        let (contract_address, token_id_part, is_contract) = match parts.len() {
-            3 if parts[2] == "image" => {
-                // Token format: contract_address/token_id/image
+        // Handle both token format: contract_address/token_id/{image|metadata}
+        // and contract format: contract_address/{image|metadata}
+        let (contract_address, token_id_part, is_contract, resource) = match parts.len() {
+            3 if StaticResource::parse(parts[2]).is_some() => {
+                // Token format: contract_address/token_id/{image|metadata}
                 if !parts[0].starts_with("0x") || !parts[1].starts_with("0x") {
                     return Ok(Response::builder()
                         .status(StatusCode::NOT_FOUND)
                         .body(Body::empty())
                         .unwrap());
                 }
-                (parts[0], parts[1], false)
+                (
+                    parts[0],
+                    parts[1],
+                    false,
+                    StaticResource::parse(parts[2]).unwrap(),
+                )
             }
-            2 if parts[1] == "image" => {
-                // Contract format: contract_address/image
+            2 if StaticResource::parse(parts[1]).is_some() => {
+                // Contract format: contract_address/{image|metadata}
                 if !parts[0].starts_with("0x") {
                     return Ok(Response::builder()
                         .status(StatusCode::NOT_FOUND)
                         .body(Body::empty())
                         .unwrap());
                 }
-                (parts[0], "", true)
+                (parts[0], "", true, StaticResource::parse(parts[1]).unwrap())
             }
             _ => {
                 return Ok(Response::builder()
@@ -156,6 +201,10 @@ impl StaticHandler {
         } else {
             format!("{}:{}", contract_address, token_id_part)
         };
+
+        if resource == StaticResource::Metadata {
+            return self.serve_metadata(&token_id, req).await;
+        }
 
         // We'll generate ETag from content hash after reading the file
 
@@ -234,16 +283,7 @@ impl StaticHandler {
                         .to_string();
 
                     // Generate ETag from content hash
-                    let mut hasher = Sha256::new();
-                    hasher.update(&contents);
-                    let hash_bytes = hasher.finalize();
-                    let etag = format!(
-                        "\"{}\"",
-                        hash_bytes[..8]
-                            .iter()
-                            .map(|b| format!("{:02x}", b))
-                            .collect::<String>()
-                    );
+                    let etag = content_etag(&contents);
 
                     // Check conditional requests now that we have the content ETag
                     if let Some(ref client_etag_str) = client_etag {
@@ -322,6 +362,67 @@ impl StaticHandler {
                 .body(Body::empty())
                 .unwrap()),
         }
+    }
+
+    /// Serves the token or contract metadata JSON stored in the database.
+    ///
+    /// Unlike the image route, this does not touch the filesystem: the stored
+    /// `metadata` column is returned verbatim, so the response always reflects the
+    /// latest indexed state. Clients get a content-based ETag and are asked to
+    /// revalidate on every request.
+    async fn serve_metadata(&self, token_id: &str, req: &Request<Body>) -> Result<Response<Body>> {
+        let query_str = format!("SELECT metadata FROM {TOKENS_TABLE} WHERE id = ?");
+        let row = sqlx::query_as::<_, (String,)>(&query_str)
+            .bind(token_id)
+            .fetch_optional(&self.pool)
+            .await
+            .context("Failed to fetch metadata from database")?;
+
+        let metadata = match row {
+            Some((metadata,)) if !metadata.trim().is_empty() => metadata,
+            Some(_) => {
+                return Ok(json_error_response(
+                    StatusCode::NOT_FOUND,
+                    "No metadata stored for token",
+                ));
+            }
+            None => {
+                return Ok(json_error_response(
+                    StatusCode::NOT_FOUND,
+                    "Token not found",
+                ));
+            }
+        };
+
+        if let Err(e) = serde_json::from_str::<serde_json::Value>(&metadata) {
+            error!(target: LOG_TARGET, token_id = %token_id, error = ?e, "Stored metadata is not valid JSON");
+            return Ok(json_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Stored metadata is not valid JSON",
+            ));
+        }
+
+        let etag = content_etag(metadata.as_bytes());
+
+        let client_etag = req
+            .headers()
+            .get("if-none-match")
+            .and_then(|h| h.to_str().ok());
+        if client_etag == Some(etag.as_str()) {
+            return Ok(Response::builder()
+                .status(StatusCode::NOT_MODIFIED)
+                .header("etag", etag)
+                .header("cache-control", "public, no-cache")
+                .body(Body::empty())
+                .unwrap());
+        }
+
+        Ok(Response::builder()
+            .header("content-type", "application/json")
+            .header("etag", etag)
+            .header("cache-control", "public, no-cache")
+            .body(Body::from(metadata))
+            .unwrap())
     }
 
     fn file_name_from_dir_and_query(
@@ -840,4 +941,166 @@ impl StaticHandler {
 pub enum ErcImageType {
     DynamicImage((DynamicImage, ImageFormat)),
     Svg(Vec<u8>),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    use super::*;
+
+    const CONTRACT: &str = "0xabc";
+    const TOKEN: &str = "0x1";
+    const CONTRACT_METADATA: &str = r#"{"name":"Collection","image":"ipfs://contract"}"#;
+    const TOKEN_METADATA: &str = r#"{"name":"Token #1","image":"ipfs://token","attributes":[{"trait_type":"Rank","value":"S"}]}"#;
+
+    async fn handler() -> StaticHandler {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        sqlx::query(&format!(
+            "CREATE TABLE {TOKENS_TABLE} (id TEXT PRIMARY KEY, metadata TEXT NOT NULL DEFAULT '', \
+             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for (id, metadata) in [
+            (CONTRACT.to_string(), CONTRACT_METADATA),
+            (format!("{CONTRACT}:{TOKEN}"), TOKEN_METADATA),
+            (format!("{CONTRACT}:0x2"), ""),
+            (format!("{CONTRACT}:0x3"), "not json"),
+        ] {
+            sqlx::query(&format!(
+                "INSERT INTO {TOKENS_TABLE} (id, metadata) VALUES (?, ?)"
+            ))
+            .bind(id)
+            .bind(metadata)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let artifacts_dir =
+            std::env::temp_dir().join(format!("torii-static-test-{}", uuid::Uuid::new_v4()));
+        StaticHandler::new(Utf8PathBuf::from_path_buf(artifacts_dir).unwrap(), pool)
+    }
+
+    async fn get(handler: &StaticHandler, path: &str, etag: Option<&str>) -> Response<Body> {
+        let mut builder = Request::builder().uri(path);
+        if let Some(etag) = etag {
+            builder = builder.header("if-none-match", etag);
+        }
+        let req = builder.body(Body::empty()).unwrap();
+        handler.handle(req, IpAddr::V4(Ipv4Addr::LOCALHOST)).await
+    }
+
+    async fn body_string(response: Response<Body>) -> String {
+        let bytes = hyper::body::to_bytes(response.into_body()).await.unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn serves_token_metadata_from_database() {
+        let handler = handler().await;
+        let response = get(
+            &handler,
+            &format!("/static/{CONTRACT}/{TOKEN}/metadata"),
+            None,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/json"
+        );
+        assert!(response.headers().contains_key("etag"));
+        assert_eq!(body_string(response).await, TOKEN_METADATA);
+    }
+
+    #[tokio::test]
+    async fn serves_contract_metadata_from_database() {
+        let handler = handler().await;
+        let response = get(&handler, &format!("/static/{CONTRACT}/metadata"), None).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_string(response).await, CONTRACT_METADATA);
+    }
+
+    #[tokio::test]
+    async fn returns_not_modified_when_etag_matches() {
+        let handler = handler().await;
+        let path = format!("/static/{CONTRACT}/{TOKEN}/metadata");
+        let first = get(&handler, &path, None).await;
+        let etag = first
+            .headers()
+            .get("etag")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let second = get(&handler, &path, Some(&etag)).await;
+        assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(second.headers().get("etag").unwrap(), etag.as_str());
+        assert!(body_string(second).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn returns_not_found_for_unknown_token() {
+        let handler = handler().await;
+        let response = get(
+            &handler,
+            &format!("/static/{CONTRACT}/0x999/metadata"),
+            None,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            body_string(response).await,
+            r#"{"error":"Token not found"}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn returns_not_found_for_empty_metadata() {
+        let handler = handler().await;
+        let response = get(&handler, &format!("/static/{CONTRACT}/0x2/metadata"), None).await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            body_string(response).await,
+            r#"{"error":"No metadata stored for token"}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn returns_server_error_for_invalid_json_metadata() {
+        let handler = handler().await;
+        let response = get(&handler, &format!("/static/{CONTRACT}/0x3/metadata"), None).await;
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn rejects_unknown_resource_and_malformed_ids() {
+        let handler = handler().await;
+
+        let unknown = get(&handler, &format!("/static/{CONTRACT}/{TOKEN}/owner"), None).await;
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+
+        let bad_contract = get(&handler, "/static/abc/metadata", None).await;
+        assert_eq!(bad_contract.status(), StatusCode::NOT_FOUND);
+
+        let bad_token = get(&handler, &format!("/static/{CONTRACT}/1/metadata"), None).await;
+        assert_eq!(bad_token.status(), StatusCode::NOT_FOUND);
+    }
 }

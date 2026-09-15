@@ -17,6 +17,7 @@ camino.workspace = true
 chrono.workspace = true
 ctrlc = { version = "3.4", features = ["termination"] }
 dojo-metrics.workspace = true
+metrics.workspace = true
 dojo-types.workspace = true
 dojo-utils.workspace = true
 dojo-world.workspace = true
@@ -68,7 +69,13 @@ rand.workspace = true
 assert_matches.workspace = true
 camino.workspace = true
 
+[target.'cfg(not(windows))'.dependencies]
+jemalloc-ctl = { version = "0.5.0", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [features]
 default = ["jemalloc", "sqlite"]
-jemalloc = ["dojo-metrics/jemalloc"]
+jemalloc = ["dojo-metrics/jemalloc", "dep:jemalloc-ctl"]
 sqlite = ["sqlx/sqlite"]
