@@ -165,11 +165,11 @@ where
             )
             .await?;
 
-        // Record successful controller registration with username
+        // Record successful controller registration. The username is deliberately not a
+        // label: one series per controller ever registered would grow without bound.
         counter!(
             "torii_processor_operations_total",
-            "operation" => "controller_registered",
-            "username" => username.clone()
+            "operation" => "controller_registered"
         )
         .increment(1);
 
