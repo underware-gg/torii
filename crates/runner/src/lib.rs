@@ -959,23 +959,44 @@ async fn spawn_rebuilding_graphql_server<P: Provider + Sync + Send + Clone + Deb
     storage: Arc<dyn ReadOnlyStorage>,
 ) {
     let mut broker = MemoryBroker::<ModelUpdate>::subscribe();
+    let mut shutdown_rx = shutdown_tx.subscribe();
+    // Each server gets its own shutdown channel so the previous one can be stopped once the
+    // proxy routes to its replacement; otherwise every rebuild leaves a full schema and
+    // listener behind for the life of the process.
+    let mut current_server: Option<Sender<()>> = None;
 
     loop {
-        let shutdown_rx = shutdown_tx.subscribe();
-        let (new_addr, new_server) =
-            torii_graphql::server::new(shutdown_rx, &pool, messaging.clone(), storage.clone())
-                .await;
+        let (server_shutdown_tx, server_shutdown_rx) = broadcast::channel(1);
+        let (new_addr, new_server) = torii_graphql::server::new(
+            server_shutdown_rx,
+            &pool,
+            messaging.clone(),
+            storage.clone(),
+        )
+        .await;
 
         tokio::spawn(new_server);
 
         proxy_server.set_graphql_addr(new_addr).await;
 
-        // Break the loop if there are no more events
-        if broker.next().await.is_none() {
-            break;
-        } else {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+        if let Some(previous_server) = current_server.replace(server_shutdown_tx) {
+            let _ = previous_server.send(());
         }
+
+        tokio::select! {
+            update = broker.next() => {
+                // Break the loop if there are no more events
+                if update.is_none() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            _ = shutdown_rx.recv() => break,
+        }
+    }
+
+    if let Some(current_server) = current_server {
+        let _ = current_server.send(());
     }
 }
 
